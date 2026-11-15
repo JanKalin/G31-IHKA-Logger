@@ -2,6 +2,8 @@ package com.g31.ihkalogger
 
 import android.Manifest
 import android.app.Application
+import android.content.ClipData
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
@@ -11,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -143,7 +146,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private var activeJob: Job? = null
     private val pendingMarker = AtomicReference("")
-    private var latestCsvFile: File? = null
+    private val sharePrefs = app.getSharedPreferences("csv_share", Context.MODE_PRIVATE)
 
     init {
         viewModelScope.launch {
@@ -390,7 +393,6 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
         val csvFile = File(app.getExternalFilesDir(null), "g31_ihka_4zone_$stamp.csv")
-        latestCsvFile = csvFile
 
         activeJob = viewModelScope.launch(Dispatchers.IO) {
             _ui.update {
@@ -546,11 +548,29 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
     fun stopActiveTask() { activeJob?.cancel() }
     fun disconnectBle() { activeJob?.cancel(); ble.disconnect() }
 
-    fun getLatestCsvFile(): File? {
-        latestCsvFile?.takeIf { it.exists() }?.let { return it }
-        return app.getExternalFilesDir(null)?.listFiles { f -> f.name.endsWith(".csv") }?.maxByOrNull { it.lastModified() }
+    /** All CSV logs, newest first, flagged with whether they were shared before. */
+    fun listCsvFiles(): List<CsvEntry> {
+        val sent = sharePrefs.getStringSet(KEY_SENT, emptySet()) ?: emptySet()
+        return (app.getExternalFilesDir(null)?.listFiles { f -> f.isFile && f.name.endsWith(".csv") } ?: emptyArray())
+            .sortedByDescending { it.lastModified() }
+            .map { CsvEntry(it, it.name in sent) }
+    }
+
+    fun markCsvSent(files: List<File>) {
+        val sent = sharePrefs.getStringSet(KEY_SENT, emptySet()).orEmpty().toMutableSet()
+        sent += files.map { it.name }
+        // Drop names of files that no longer exist so the set doesn't grow forever.
+        val existing = app.getExternalFilesDir(null)?.list()?.toSet() ?: emptySet()
+        sent.retainAll(existing)
+        sharePrefs.edit().putStringSet(KEY_SENT, sent).apply()
+    }
+
+    private companion object {
+        const val KEY_SENT = "sent_files"
     }
 }
+
+data class CsvEntry(val file: File, val sent: Boolean)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -571,10 +591,53 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
     val state by vm.ui.collectAsState()
     val s = state.snap
     val context = LocalContext.current
+    var showCalibConfirm by remember { mutableStateOf(false) }
+    var shareEntries by remember { mutableStateOf<List<CsvEntry>?>(null) }
+
+    shareEntries?.let { entries ->
+        CsvShareDialog(
+            entries = entries,
+            onDismiss = { shareEntries = null },
+            onShare = { files ->
+                shareEntries = null
+                shareCsvFiles(context, files)
+                vm.markCsvSent(files)
+            }
+        )
+    }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants -> if (grants.values.all { it }) vm.connectAdapter() }
+
+    if (showCalibConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCalibConfirm = false },
+            title = { Text("Calibrate IHKA Flaps?") },
+            text = {
+                Text(
+                    "This runs the factory Flap Motor End-Stop Calibration routine (UDS 31 01 A1 24) and sweeps all LIN stepper motors between 0% and 100%.\n\n" +
+                    "Ensure the engine is OFF and Ignition/Diagnostic Mode is ON (press Start 3x without brake) before proceeding."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showCalibConfirm = false
+                        vm.runFlapCalibrationRoutine()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
+                ) {
+                    Text("Start Calibration", color = Color.White)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showCalibConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -660,25 +723,14 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             ) { Text(if (state.isLogging) "STOP LOG" else "START 1Hz LOG", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
 
             OutlinedButton(
-                onClick = { vm.runFlapCalibrationRoutine() },
+                onClick = { showCalibConfirm = true },
                 enabled = !state.isLogging && !state.isBusy,
                 modifier = Modifier.weight(1.1f),
                 contentPadding = PaddingValues(vertical = 8.dp)
             ) { Text("CALIB FLAPS", fontSize = 12.sp) }
 
             OutlinedButton(
-                onClick = {
-                    val file = vm.getLatestCsvFile()
-                    if (file != null) {
-                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                        val share = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/csv"
-                            putExtra(Intent.EXTRA_STREAM, uri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        context.startActivity(Intent.createChooser(share, "Share ${file.name}"))
-                    }
-                },
+                onClick = { shareEntries = vm.listCsvFiles() },
                 modifier = Modifier.weight(0.9f),
                 contentPadding = PaddingValues(vertical = 8.dp)
             ) { Text("SHARE CSV", fontSize = 12.sp) }
@@ -709,6 +761,89 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             }
         }
     }
+}
+
+@Composable
+fun CsvShareDialog(entries: List<CsvEntry>, onDismiss: () -> Unit, onShare: (List<File>) -> Unit) {
+    // Unsent files start checked, already-sent ones unchecked.
+    val checked = remember(entries) {
+        mutableStateMapOf<String, Boolean>().apply { entries.forEach { put(it.file.name, !it.sent) } }
+    }
+    val selected = entries.filter { checked[it.file.name] == true }.map { it.file }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Share CSV logs") },
+        text = {
+            if (entries.isEmpty()) {
+                Text("No CSV logs found.")
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    items(entries, key = { it.file.name }) { e ->
+                        val isChecked = checked[e.file.name] == true
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { checked[e.file.name] = !isChecked }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(checked = isChecked, onCheckedChange = { checked[e.file.name] = it })
+                            Column {
+                                Text(
+                                    csvDisplayName(e.file),
+                                    fontSize = 14.sp,
+                                    fontWeight = if (e.sent) FontWeight.Normal else FontWeight.Bold
+                                )
+                                Text(
+                                    "${"%.1f".format(Locale.US, e.file.length() / 1024f)} KB" +
+                                        if (e.sent) " · sent" else "",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF90A4AE)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onShare(selected) }, enabled = selected.isNotEmpty()) {
+                Text("Share (${selected.size})")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+private val CSV_STAMP_IN = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+private val CSV_STAMP_OUT = DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm:ss")
+
+/** "g31_ihka_4zone_20261115_143005.csv" -> "2026-11-15  14:30:05"; falls back to the raw file name. */
+fun csvDisplayName(file: File): String {
+    val stamp = Regex("""(\d{8}_\d{6})\.csv$""").find(file.name)?.groupValues?.get(1) ?: return file.name
+    return runCatching { LocalDateTime.parse(stamp, CSV_STAMP_IN).format(CSV_STAMP_OUT) }.getOrDefault(file.name)
+}
+
+fun shareCsvFiles(context: Context, files: List<File>) {
+    if (files.isEmpty()) return
+    val uris = files.map { FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it) }
+    val share = if (uris.size == 1) {
+        Intent(Intent.ACTION_SEND).apply { putExtra(Intent.EXTRA_STREAM, uris[0]) }
+    } else {
+        Intent(Intent.ACTION_SEND_MULTIPLE).apply { putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris)) }
+    }.apply {
+        type = "text/csv"
+        // Explicit ClipData so the read grant covers every URI, including through the chooser.
+        clipData = ClipData.newUri(context.contentResolver, files[0].name, uris[0]).also { clip ->
+            uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+        }
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    val title = if (files.size == 1) "Share ${files[0].name}" else "Share ${files.size} CSV logs"
+    context.startActivity(Intent.createChooser(share, title))
 }
 
 @Composable
