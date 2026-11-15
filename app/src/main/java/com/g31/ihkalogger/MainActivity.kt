@@ -6,10 +6,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -41,26 +39,97 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-data class DidReading(
-    val didHex: String,
-    val rawHex: String,
-    val decodedPrimary: String
-)
+data class IhkaSnapshot(
+    val batteryV: Float = Float.NaN,
+    // DID 0xD8D7: 10 4-Zone Temperatures
+    val evapC: Float = Float.NaN,
+    val cabinC: Int = 0,
+    val ventFrontL: Int = 0,
+    val ventFrontR: Int = 0,
+    val footFrontL: Int = 0,
+    val footFrontR: Int = 0,
+    val ventRearL: Int = 0,
+    val ventRearR: Int = 0,
+    val footRearL: Int = 0,
+    val footRearR: Int = 0,
+    // DID 0xD8D9: Bus-In Signals
+    val outsideC: Float = Float.NaN,
+    val windshieldC: Float = Float.NaN,
+    val windshieldRh: Float = Float.NaN,
+    val acBar: Int = 0,
+    val coolantC: Int = 0,
+    // DID 0xD8DB: Active Aircon Settings & Blower Steps
+    val acOn: Int = -1,
+    val maxAcOn: Int = -1,
+    val autoFlapL: Int = -1,
+    val autoFlapR: Int = -1,
+    val autoBlowerL: Int = -1,
+    val autoBlowerR: Int = -1,
+    val aucOn: Int = -1,
+    val recircOn: Int = -1,
+    val defrostProgOn: Int = -1,
+    val systemOff: Int = -1,
+    val blowerStepL: Int = -1,
+    val blowerStepR: Int = -1,
+    val blowerStepRear: Int = -1,
+    // DID 0xD8D8: Stratification Potentiometers (0=Cold, 50=Neutral, 100=Warm)
+    val stratL: Int = -1,
+    val stratR: Int = -1,
+    val stratRearL: Int = -1,
+    val stratRearR: Int = -1,
+    // Routine 0xA12A: Target Setpoint Temperatures (°C) & SYNC state
+    val targetFrontL: Int = -1,
+    val targetFrontR: Int = -1,
+    val targetRearL: Int = -1,
+    val targetRearR: Int = -1,
+    val syncActive: Int = -1,
+    // Routine 0xA128: Actual Blower Power Output (0..100%)
+    val blowerPctFront: Int = -1,
+    val blowerPctRear: Int = -1,
+    // Routine 0xA12B: Electric PTC Auxiliary Heater Duty Cycle (%) & PCB Temp (°C)
+    val ptcDutyPct: Float = Float.NaN,
+    val ptcTempC: Int = -999,
+    val ptcCurrentA: Float = Float.NaN,
+    // Routine 0xA122: LIN Flap Positions (0..100%) — Front & Rear
+    val flapDefrost: Int = -1,
+    val flapVentL: Int = -1,
+    val flapVentR: Int = -1,
+    val flapFootL: Int = -1,
+    val flapFootR: Int = -1,
+    val flapRearDistL: Int = -1,
+    val flapRearDistR: Int = -1,
+    val flapMixL: Int = -1,
+    val flapMixR: Int = -1,
+    val flapRearMixL: Int = -1,
+    val flapRearMixR: Int = -1
+) {
+    fun ventStateSummary(): String {
+        if (systemOff == 1) return "OFF"
+        if (defrostProgOn == 1) return "MAX DEF"
+        val lMode = when (autoFlapL) {
+            1 -> "AUTO"
+            0 -> "MAN"
+            else -> "--"
+        }
+        val rMode = when (autoFlapR) {
+            1 -> "AUTO"
+            0 -> "MAN"
+            else -> "--"
+        }
+        val acTag = if (maxAcOn == 1) "MAX-AC" else if (acOn == 1) "AC:ON" else if (acOn == 0) "AC:OFF" else ""
+        return if (lMode == rMode) "$lMode $acTag".trim() else "L:$lMode/R:$rMode $acTag".trim()
+    }
+}
 
 data class UiState(
     val connStatus: String = "Disconnected",
     val isBusy: Boolean = false,
     val isLogging: Boolean = false,
-    val didInput: String = "D901 D904 D905 D910",
-    val batteryV: Float? = null,
-    val coolantC: Int? = null,
-    val ambientC: Int? = null,
-    val rpm: Int? = null,
     val sampleCount: Int = 0,
-    val activeCsvName: String = "",
-    val didReadings: List<DidReading> = emptyList(),
-    val sparkCoolant: List<Float> = emptyList(),
-    val sparkPrimaryTemp: List<Float> = emptyList(),
+    val snap: IhkaSnapshot = IhkaSnapshot(),
+    val sparkEvap: List<Float> = emptyList(),
+    val sparkFootL: List<Float> = emptyList(),
+    val sparkWindshield: List<Float> = emptyList(),
     val consoleLines: List<String> = emptyList()
 )
 
@@ -77,27 +146,9 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch {
             ble.connectionState.collect { st ->
-                _ui.value = if (st == "Disconnected") {
-                    _ui.value.copy(connStatus = st, batteryV = null)
-                } else {
-                    _ui.value.copy(connStatus = st)
-                }
+                _ui.value = _ui.value.copy(connStatus = st)
             }
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            while (isActive) {
-                delay(3000L)
-                if (ble.isConnected && !_ui.value.isBusy && !_ui.value.isLogging) {
-                    runCatching { readBatteryVoltage() }.getOrNull()?.let { v ->
-                        _ui.value = _ui.value.copy(batteryV = v)
-                    }
-                }
-            }
-        }
-    }
-
-    fun updateDidInput(text: String) {
-        _ui.value = _ui.value.copy(didInput = text)
     }
 
     fun flagCabinEvent(tag: String) {
@@ -106,8 +157,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     private fun appendLog(msg: String) {
-        val cur = _ui.value.consoleLines
-        val updated = (listOf(msg) + cur).take(120)
+        val updated = (listOf(msg) + _ui.value.consoleLines).take(120)
         _ui.value = _ui.value.copy(consoleLines = updated)
     }
 
@@ -117,18 +167,20 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
             _ui.value = _ui.value.copy(isBusy = true)
             try {
                 ble.scanAndConnect()
-                val (elm, stn) = ble.initAdapter()
-                appendLog("[+] Ready: $elm | $stn")
-                val battV = readBatteryVoltage()
-                val obd = readStandardObd()
-                _ui.value = _ui.value.copy(
-                    batteryV = battV,
-                    coolantC = obd.first,
-                    ambientC = obd.second,
-                    rpm = obd.third
-                )
-                val vStr = battV?.let { String.format(Locale.US, "%.1fV", it) } ?: "?"
-                appendLog("[+] Batt=$vStr | B58 Coolant=${obd.first ?: "?"}°C | Amb=${obd.second ?: "?"}°C | RPM=${obd.third ?: "?"}")
+                val stn = ble.initBmwRawCan()
+                appendLog("[+] Ready (Deep OBD Raw CAN Mode): $stn")
+                val snap = pollOnce()
+                if (snap != null) {
+                    _ui.value = _ui.value.copy(snap = snap)
+                    val vStr = if (snap.batteryV.isNaN()) "--" else "%.2fV".format(Locale.US, snap.batteryV)
+                    val ptcStr = if (snap.ptcDutyPct.isNaN()) "--" else "%.0f%%".format(Locale.US, snap.ptcDutyPct)
+                    appendLog(
+                        "[+] IHKA_G11 Live -> 12V=$vStr, Mode=${snap.ventStateSummary()}, " +
+                        "PTC=$ptcStr, Evap=${"%.1f".format(Locale.US, snap.evapC)}°C"
+                    )
+                } else {
+                    appendLog("[!] No reply on 0xD8D7. Tap Start 3x for Diagnostic Mode!")
+                }
             } catch (e: Exception) {
                 appendLog("[!] Connect error: ${e.message}")
             } finally {
@@ -137,145 +189,236 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun readIhkaInfoAndDtcs() {
-        if (!ble.isConnected || _ui.value.isBusy || _ui.value.isLogging) {
-            appendLog("[!] Connect to OBDLink CX first.")
-            return
+    private suspend fun pollOnce(): IhkaSnapshot? {
+        val battV = ble.readBatteryVoltage()
+
+        // 1. DID 0xD8D7: 10 4-Zone Temperatures
+        val rD7 = ble.bmwUdsRequest("22D8D7") ?: return null
+        if (rD7.size < 14 || (rD7[0].toInt() and 0xFF) != 0x62) return null
+        val d7 = rD7.copyOfRange(3, rD7.size)
+
+        val evapC = (d7[0].toInt() and 0xFF) / 5.0f - 10.0f
+        val ventFL = d7[1].toInt()
+        val ventFR = d7[2].toInt()
+        val footFL = d7[3].toInt()
+        val footFR = d7[4].toInt()
+        val ventRL = d7[6].toInt()
+        val ventRR = d7[7].toInt()
+        val footRL = d7[8].toInt()
+        val footRR = d7[9].toInt()
+        val cabinC = d7[10].toInt()
+
+        // 2. DID 0xD8D9: Outside Temp, Windshield RLBS Temp & RH, AC Pressure, Engine Coolant
+        var outsideC = Float.NaN
+        var wsC = Float.NaN
+        var wsRh = Float.NaN
+        var acBar = 0
+        var coolantC = 0
+
+        val rD9 = ble.bmwUdsRequest("22D8D9")
+        if (rD9 != null && rD9.size >= 13 && (rD9[0].toInt() and 0xFF) == 0x62) {
+            val d9 = rD9.copyOfRange(3, rD9.size)
+            outsideC = (d9[1].toInt() and 0xFF) / 2.0f - 40.0f
+            wsRh     = (d9[2].toInt() and 0xFF) / 2.0f
+            wsC      = (d9[3].toInt() and 0xFF) / 2.0f - 40.0f
+            acBar    = d9[7].toInt() and 0xFF
+            coolantC = ((d9[8].toInt() shl 8) or (d9[9].toInt() and 0xFF)).toShort().toInt()
         }
-        activeJob = viewModelScope.launch(Dispatchers.IO) {
-            _ui.value = _ui.value.copy(isBusy = true)
-            try {
-                ble.setBmwEcu(0x78)
-                val sess = ble.udsRequest("1003")
-                if (sess == null || (sess[0].toInt() and 0xFF) != 0x50) {
-                    appendLog("[!] No reply from IHKA (0x78). Press Start 3x quickly for Diagnostic Mode!")
-                    return@launch
-                }
-                appendLog("[+] IHKA Session 1003 active")
 
-                val part = ble.udsRequest("22F187")
-                if (part != null && part.size > 3 && (part[0].toInt() and 0xFF) == 0x62) {
-                    val pn = part.copyOfRange(3, part.size).toString(Charsets.US_ASCII).trim()
-                    appendLog("[+] IHKA BMW Part #: $pn")
-                }
+        // 3. DID 0xD8DB: Active Aircon Settings (AUTO vs Manual Vent/Blower, AC, Recirc, Blower Steps)
+        var autoBlowerL = -1
+        var autoBlowerR = -1
+        var aucOn = -1
+        var recircOn = -1
+        var defrostProgOn = -1
+        var autoFlapL = -1
+        var autoFlapR = -1
+        var acOn = -1
+        var maxAcOn = -1
+        var systemOff = -1
+        var blowerStepL = -1
+        var blowerStepR = -1
+        var blowerStepRear = -1
 
-                val dtc = ble.udsRequest("19020C", timeoutMs = 3000L)
-                if (dtc != null && dtc.size >= 3 && (dtc[0].toInt() and 0xFF) == 0x59) {
-                    val body = dtc.copyOfRange(3, dtc.size)
-                    if (body.isEmpty()) {
-                        appendLog("[+] Zero active/stored fault codes in IHKA.")
-                    } else {
-                        val count = body.size / 4
-                        appendLog("[!] Found $count IHKA Fault Code(s):")
-                        var i = 0
-                        while (i + 3 < body.size) {
-                            val code = "%02X%02X%02X".format(body[i], body[i + 1], body[i + 2])
-                            val status = "%02X".format(body[i + 3])
-                            appendLog("    DTC 0x$code (status=0x$status)")
-                            i += 4
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                appendLog("[!] Info error: ${e.message}")
-            } finally {
-                _ui.value = _ui.value.copy(isBusy = false)
+        val rDB = ble.bmwUdsRequest("22D8DB")
+        if (rDB != null && rDB.size >= 22 && (rDB[0].toInt() and 0xFF) == 0x62) {
+            val db = rDB.copyOfRange(3, rDB.size)
+            autoBlowerL   = db[0].toInt() and 0xFF
+            autoBlowerR   = db[1].toInt() and 0xFF
+            aucOn         = db[3].toInt() and 0xFF
+            recircOn      = db[4].toInt() and 0xFF
+            defrostProgOn = db[7].toInt() and 0xFF
+            autoFlapL     = db[8].toInt() and 0xFF
+            autoFlapR     = db[9].toInt() and 0xFF
+            acOn          = db[11].toInt() and 0xFF
+            maxAcOn       = db[12].toInt() and 0xFF
+            systemOff     = db[15].toInt() and 0xFF
+            blowerStepL   = db[16].toInt() and 0xFF
+            blowerStepR   = db[17].toInt() and 0xFF
+            if (db.size >= 28) {
+                blowerStepRear = db[27].toInt() and 0xFF
             }
         }
-    }
 
-    fun sweepIhkaDids() {
-        if (!ble.isConnected || _ui.value.isBusy || _ui.value.isLogging) {
-            appendLog("[!] Connect to OBDLink CX first.")
-            return
+        // 4. DID 0xD8D8: Stratification Sliders (0=Cold, 50=Neutral, 100=Warm)
+        var stratL = -1
+        var stratR = -1
+        var stratRL = -1
+        var stratRR = -1
+
+        val rD8 = ble.bmwUdsRequest("22D8D8")
+        if (rD8 != null && rD8.size >= 9 && (rD8[0].toInt() and 0xFF) == 0x62) {
+            val d8 = rD8.copyOfRange(3, rD8.size)
+            stratL  = (d8[1].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            stratR  = (d8[2].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            stratRL = (d8[4].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            stratRR = (d8[5].toInt() and 0xFF).let { if (it <= 100) it else -1 }
         }
-        activeJob = viewModelScope.launch(Dispatchers.IO) {
-            _ui.value = _ui.value.copy(isBusy = true)
-            val hits = mutableListOf<String>()
-            try {
-                ble.setBmwEcu(0x78)
-                ble.cmd("ATST19")
-                ble.udsRequest("1003")
-                val ranges = listOf(0xD800..0xDBFF, 0x4000..0x41FF)
-                appendLog("[*] Sweeping IHKA DIDs (tap STOP to abort early)...")
 
-                for (r in ranges) {
-                    for (did in r) {
-                        ensureActive()
-                        if ((did - r.first) % 64 == 0 && did > r.first) {
-                            ble.udsRequest("3E00", timeoutMs = 500L)
-                            readBatteryVoltage()?.let { v ->
-                                _ui.value = _ui.value.copy(batteryV = v)
-                            }
-                        }
-                        val hexId = "%04X".format(did)
-                        val resp = ble.udsRequest("22$hexId", timeoutMs = 550L)
-                        if (resp != null && resp.size > 3 && (resp[0].toInt() and 0xFF) == 0x62) {
-                            val vb = resp.copyOfRange(3, resp.size)
-                            val hx = vb.joinToString("") { "%02X".format(it) }
-                            val hint = decodeHint(vb)
-                            hits.add(hexId)
-                            appendLog("[HIT] 0x$hexId = $hx ($hint)")
-                        }
-                    }
-                }
-                ble.cmd("ATST32")
-                appendLog("[+] Sweep done: ${hits.size} DIDs found.")
-                if (hits.isNotEmpty()) {
-                    _ui.value = _ui.value.copy(didInput = hits.take(8).joinToString(" "))
-                }
-            } catch (_: CancellationException) {
-                appendLog("[*] Sweep stopped (${hits.size} hits so far).")
-                if (hits.isNotEmpty()) {
-                    _ui.value = _ui.value.copy(didInput = hits.take(8).joinToString(" "))
-                }
-            } catch (e: Exception) {
-                appendLog("[!] Sweep error: ${e.message}")
-            } finally {
-                runCatching { ble.cmd("ATST32") }
-                _ui.value = _ui.value.copy(isBusy = false)
+        // 5. Routine 31 03 A1 2A: Target Setpoint Temperatures (°C) & SYNC check
+        var targetFL = -1
+        var targetFR = -1
+        var targetRL = -1
+        var targetRR = -1
+        var syncActive = -1
+
+        val rSet = ble.bmwUdsRequest("3103A12A")
+        if (rSet != null && rSet.size >= 9 && (rSet[0].toInt() and 0xFF) == 0x71) {
+            val sp = rSet.copyOfRange(4, rSet.size)
+            targetFL = (sp[1].toInt() and 0xFF).let { if (it in 14..32) it else -1 }
+            targetFR = (sp[2].toInt() and 0xFF).let { if (it in 14..32) it else -1 }
+            targetRL = (sp[3].toInt() and 0xFF).let { if (it in 14..32) it else -1 }
+            targetRR = (sp[4].toInt() and 0xFF).let { if (it in 14..32) it else -1 }
+            if (targetFL > 0 && targetFR > 0) {
+                val allMatch = (targetFL == targetFR) &&
+                    (targetRL < 0 || targetRL == targetFL) &&
+                    (targetRR < 0 || targetRR == targetFL)
+                syncActive = if (allMatch) 1 else 0
             }
         }
+
+        // 6. Routine 31 03 A1 28: Actual Blower Output Power (0..100%)
+        var blowerPctFront = -1
+        var blowerPctRear = -1
+
+        val rBlw = ble.bmwUdsRequest("3103A128")
+        if (rBlw != null && rBlw.size >= 6 && (rBlw[0].toInt() and 0xFF) == 0x71) {
+            val bl = rBlw.copyOfRange(4, rBlw.size)
+            blowerPctFront = (bl[0].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            blowerPctRear  = (bl[1].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+        }
+
+        // 7. Routine 31 03 A1 2B: Electric PTC Auxiliary Heater Duty Cycle (%) & PCB Temp (°C)
+        var ptcDutyPct = Float.NaN
+        var ptcTempC = -999
+        var ptcCurrentA = Float.NaN
+
+        val rPtc = ble.bmwUdsRequest("3103A12B")
+        if (rPtc != null && rPtc.size >= 8 && (rPtc[0].toInt() and 0xFF) == 0x71) {
+            val ptc = rPtc.copyOfRange(4, rPtc.size)
+            val rawDuty = ptc[0].toInt() and 0xFF
+            if (rawDuty <= 200) ptcDutyPct = rawDuty / 2.0f
+            val rawCurr = ptc[2].toInt() and 0xFF
+            if (rawCurr < 255) ptcCurrentA = rawCurr / 5.0f
+            val rawTemp = ptc[3].toInt() and 0xFF
+            if (rawTemp < 250) ptcTempC = rawTemp - 40
+        }
+
+        // 8. Routine 31 03 A1 22: Klappenmotoren Positionen (0..100%) — Front & Rear
+        var flapDef = -1
+        var flapVentL = -1
+        var flapVentR = -1
+        var flapFootL = -1
+        var flapFootR = -1
+        var flapRearDistL = -1
+        var flapRearDistR = -1
+        var flapMixL = -1
+        var flapMixR = -1
+        var flapRearMixL = -1
+        var flapRearMixR = -1
+
+        val rFlap = ble.bmwUdsRequest("3103A122")
+        if (rFlap != null && rFlap.size >= 25 && (rFlap[0].toInt() and 0xFF) == 0x71) {
+            val fl = rFlap.copyOfRange(4, rFlap.size)
+            flapDef       = (fl[3].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapVentL     = (fl[4].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapVentR     = (fl[5].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapFootL     = (fl[11].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapFootR     = (fl[12].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapRearDistL = (fl[13].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapRearDistR = (fl[14].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapMixL      = (fl[16].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapMixR      = (fl[17].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapRearMixL  = (fl[19].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+            flapRearMixR  = (fl[20].toInt() and 0xFF).let { if (it <= 100) it else -1 }
+        }
+
+        return IhkaSnapshot(
+            batteryV = battV,
+            evapC = evapC, cabinC = cabinC,
+            ventFrontL = ventFL, ventFrontR = ventFR,
+            footFrontL = footFL, footFrontR = footFR,
+            ventRearL = ventRL, ventRearR = ventRR,
+            footRearL = footRL, footRearR = footRR,
+            outsideC = outsideC, windshieldC = wsC, windshieldRh = wsRh,
+            acBar = acBar, coolantC = coolantC,
+            acOn = acOn, maxAcOn = maxAcOn,
+            autoFlapL = autoFlapL, autoFlapR = autoFlapR,
+            autoBlowerL = autoBlowerL, autoBlowerR = autoBlowerR,
+            aucOn = aucOn, recircOn = recircOn,
+            defrostProgOn = defrostProgOn, systemOff = systemOff,
+            blowerStepL = blowerStepL, blowerStepR = blowerStepR, blowerStepRear = blowerStepRear,
+            stratL = stratL, stratR = stratR, stratRearL = stratRL, stratRearR = stratRR,
+            targetFrontL = targetFL, targetFrontR = targetFR,
+            targetRearL = targetRL, targetRearR = targetRR,
+            syncActive = syncActive,
+            blowerPctFront = blowerPctFront, blowerPctRear = blowerPctRear,
+            ptcDutyPct = ptcDutyPct, ptcTempC = ptcTempC, ptcCurrentA = ptcCurrentA,
+            flapDefrost = flapDef, flapVentL = flapVentL, flapVentR = flapVentR,
+            flapFootL = flapFootL, flapFootR = flapFootR,
+            flapRearDistL = flapRearDistL, flapRearDistR = flapRearDistR,
+            flapMixL = flapMixL, flapMixR = flapMixR,
+            flapRearMixL = flapRearMixL, flapRearMixR = flapRearMixR
+        )
     }
 
     fun startLogging() {
         if (!ble.isConnected || _ui.value.isLogging) {
-            appendLog("[!] Connect to OBDLink CX before logging.")
+            appendLog("[!] Connect to OBDLink CX first.")
             return
         }
-        val dids = _ui.value.didInput
-            .trim()
-            .split(Regex("[\\s,]+"))
-            .map { it.uppercase().removePrefix("0X") }
-            .filter { it.matches(Regex("^[0-9A-F]{4}$")) }
-
-        if (dids.isEmpty()) {
-            appendLog("[!] Enter at least one 4-digit hex DID (or run SWEEP first).")
-            return
-        }
-
         val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-        val csvFile = File(app.getExternalFilesDir(null), "g31_ihka_ble_log_$stamp.csv")
+        val csvFile = File(app.getExternalFilesDir(null), "g31_ihka_4zone_$stamp.csv")
         latestCsvFile = csvFile
 
         activeJob = viewModelScope.launch(Dispatchers.IO) {
             _ui.value = _ui.value.copy(
-                isLogging = true,
-                sampleCount = 0,
-                activeCsvName = csvFile.name,
-                sparkCoolant = emptyList(),
-                sparkPrimaryTemp = emptyList()
+                isLogging = true, sampleCount = 0,
+                sparkEvap = emptyList(), sparkFootL = emptyList(), sparkWindshield = emptyList()
             )
-            appendLog("[*] Logging to ${csvFile.name}")
+            appendLog("[*] Logging 1 Hz G31 4-Zone telemetry + PTC + Flaps -> ${csvFile.name}")
 
-            val headers = mutableListOf(
-                "timestamp", "elapsed_s", "battery_v", "b58_coolant_c", "ambient_obd_c", "b58_rpm", "event_marker"
+            val headers = listOf(
+                "timestamp", "elapsed_s", "event_marker", "battery_v",
+                "evap_c", "cabin_c",
+                "vent_fl_c", "vent_fr_c", "foot_fl_c", "foot_fr_c",
+                "vent_rl_c", "vent_rr_c", "foot_rl_c", "foot_rr_c",
+                "outside_c", "windshield_c", "windshield_rh", "ac_bar", "b58_coolant_c",
+                // Aircon Settings & State (0xD8DB, 0xD8D8, 0xA12A, 0xA128, 0xA12B)
+                "target_fl_c", "target_fr_c", "target_rl_c", "target_rr_c", "sync_active",
+                "ac_on", "max_ac_on", "auto_flap_l", "auto_flap_r", "auto_blower_l", "auto_blower_r",
+                "recirc_on", "auc_on", "defrost_prog_on", "system_off",
+                "blower_step_l", "blower_step_r", "blower_step_rear",
+                "blower_pct_front", "blower_pct_rear",
+                "ptc_duty_pct", "ptc_temp_c", "ptc_current_a",
+                "strat_l_pct", "strat_r_pct", "strat_rl_pct", "strat_rr_pct",
+                // Flap Positions (0xA122) — Front & Rear
+                "flap_defrost_pct", "flap_vent_l_pct", "flap_vent_r_pct",
+                "flap_foot_l_pct", "flap_foot_r_pct",
+                "flap_rear_dist_l_pct", "flap_rear_dist_r_pct",
+                "flap_mix_l_pct", "flap_mix_r_pct",
+                "flap_rear_mix_l_pct", "flap_rear_mix_r_pct"
             )
-            for (d in dids) {
-                headers.addAll(
-                    listOf("DID_${d}_hex", "DID_${d}_1b_m40", "DID_${d}_u16_01_m40", "DID_${d}_s16_01")
-                )
-            }
 
             val t0 = System.nanoTime()
             try {
@@ -285,182 +428,127 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
 
                     var count = 0
                     while (isActive) {
-                        val loopStart = System.nanoTime()
-                        val elapsedS = (loopStart - t0) / 1_000_000_000.0
-                        val isoNow = LocalDateTime.now().toString()
+                        val tLoop = System.nanoTime()
+                        val elapsed = (tLoop - t0) / 1_000_000_000.0
                         val marker = pendingMarker.also { pendingMarker = "" }
 
-                        val battV = readBatteryVoltage()
-                        val (coolant, amb, rpm) = readStandardObd()
-                        ble.setBmwEcu(0x78)
-                        ble.udsRequest("3E00", timeoutMs = 500L)
+                        val s = pollOnce()
+                        if (s != null) {
+                            val row = listOf(
+                                LocalDateTime.now().toString(),
+                                "%.2f".format(Locale.US, elapsed),
+                                marker,
+                                if (s.batteryV.isNaN()) "" else "%.2f".format(Locale.US, s.batteryV),
+                                "%.2f".format(Locale.US, s.evapC),
+                                s.cabinC.toString(),
+                                s.ventFrontL.toString(), s.ventFrontR.toString(),
+                                s.footFrontL.toString(), s.footFrontR.toString(),
+                                s.ventRearL.toString(), s.ventRearR.toString(),
+                                s.footRearL.toString(), s.footRearR.toString(),
+                                if (s.outsideC.isNaN()) "" else "%.1f".format(Locale.US, s.outsideC),
+                                if (s.windshieldC.isNaN()) "" else "%.1f".format(Locale.US, s.windshieldC),
+                                if (s.windshieldRh.isNaN()) "" else "%.1f".format(Locale.US, s.windshieldRh),
+                                s.acBar.toString(),
+                                s.coolantC.toString(),
+                                // Aircon Settings & State
+                                fmtInt(s.targetFrontL), fmtInt(s.targetFrontR),
+                                fmtInt(s.targetRearL), fmtInt(s.targetRearR),
+                                fmtInt(s.syncActive),
+                                fmtInt(s.acOn), fmtInt(s.maxAcOn),
+                                fmtInt(s.autoFlapL), fmtInt(s.autoFlapR),
+                                fmtInt(s.autoBlowerL), fmtInt(s.autoBlowerR),
+                                fmtInt(s.recircOn), fmtInt(s.aucOn),
+                                fmtInt(s.defrostProgOn), fmtInt(s.systemOff),
+                                fmtInt(s.blowerStepL), fmtInt(s.blowerStepR), fmtInt(s.blowerStepRear),
+                                fmtInt(s.blowerPctFront), fmtInt(s.blowerPctRear),
+                                if (s.ptcDutyPct.isNaN()) "" else "%.1f".format(Locale.US, s.ptcDutyPct),
+                                if (s.ptcTempC > -100) s.ptcTempC.toString() else "",
+                                if (s.ptcCurrentA.isNaN()) "" else "%.1f".format(Locale.US, s.ptcCurrentA),
+                                fmtInt(s.stratL), fmtInt(s.stratR), fmtInt(s.stratRearL), fmtInt(s.stratRearR),
+                                // Flaps Front & Rear
+                                fmtInt(s.flapDefrost), fmtInt(s.flapVentL), fmtInt(s.flapVentR),
+                                fmtInt(s.flapFootL), fmtInt(s.flapFootR),
+                                fmtInt(s.flapRearDistL), fmtInt(s.flapRearDistR),
+                                fmtInt(s.flapMixL), fmtInt(s.flapMixR),
+                                fmtInt(s.flapRearMixL), fmtInt(s.flapRearMixR)
+                            )
+                            writer.write(row.joinToString(",") + "\n")
+                            writer.flush()
+                            count++
 
-                        val row = mutableListOf(
-                            isoNow,
-                            String.format(Locale.US, "%.2f", elapsedS),
-                            battV?.let { String.format(Locale.US, "%.2f", it) } ?: "",
-                            coolant?.toString() ?: "",
-                            amb?.toString() ?: "",
-                            rpm?.toString() ?: "",
-                            marker
-                        )
-
-                        val liveCards = mutableListOf<DidReading>()
-                        var firstPlausibleTemp: Float? = null
-
-                        for (d in dids) {
-                            val resp = ble.udsRequest("22$d", timeoutMs = 700L)
-                            if (resp != null && resp.size > 3 && (resp[0].toInt() and 0xFF) == 0x62) {
-                                val vb = resp.copyOfRange(3, resp.size)
-                                val hx = vb.joinToString("") { "%02X".format(it) }
-                                val b0 = vb[0].toInt() and 0xFF
-                                val c1b = String.format(Locale.US, "%.1f", b0 - 40.0)
-
-                                var cU16 = ""
-                                var cS16 = ""
-                                if (vb.size >= 2) {
-                                    val u16 = ((vb[0].toInt() and 0xFF) shl 8) or (vb[1].toInt() and 0xFF)
-                                    val s16 = ((vb[0].toInt() shl 8) or (vb[1].toInt() and 0xFF)).toShort().toInt()
-                                    val uVal = 0.1 * u16 - 40.0
-                                    cU16 = String.format(Locale.US, "%.2f", uVal)
-                                    cS16 = String.format(Locale.US, "%.2f", 0.1 * s16)
-                                    if (firstPlausibleTemp == null && uVal in -25.0..90.0) {
-                                        firstPlausibleTemp = uVal.toFloat()
-                                    }
-                                } else if (firstPlausibleTemp == null && (b0 - 40) in -25..85) {
-                                    firstPlausibleTemp = (b0 - 40).toFloat()
-                                }
-
-                                row.addAll(listOf(hx, c1b, cU16, cS16))
-                                liveCards.add(DidReading(d, hx, decodeHint(vb)))
-                            } else {
-                                row.addAll(listOf("", "", "", ""))
-                                liveCards.add(DidReading(d, "ERR", "--"))
-                            }
+                            val cur = _ui.value
+                            _ui.value = cur.copy(
+                                sampleCount = count,
+                                snap = s,
+                                sparkEvap = (cur.sparkEvap + s.evapC).takeLast(120),
+                                sparkFootL = (cur.sparkFootL + s.footFrontL.toFloat()).takeLast(120),
+                                sparkWindshield = if (!s.windshieldC.isNaN()) (cur.sparkWindshield + s.windshieldC).takeLast(120) else cur.sparkWindshield
+                            )
                         }
-
-                        writer.write(row.joinToString(",") + "\n")
-                        writer.flush()
-                        count++
-
-                        val cur = _ui.value
-                        val nextCoolantSpark = if (coolant != null) (cur.sparkCoolant + coolant.toFloat()).takeLast(120) else cur.sparkCoolant
-                        val nextIhkaSpark = if (firstPlausibleTemp != null) (cur.sparkPrimaryTemp + firstPlausibleTemp).takeLast(120) else cur.sparkPrimaryTemp
-
-                        _ui.value = cur.copy(
-                            batteryV = battV ?: cur.batteryV,
-                            coolantC = coolant,
-                            ambientC = amb,
-                            rpm = rpm,
-                            sampleCount = count,
-                            didReadings = liveCards,
-                            sparkCoolant = nextCoolantSpark,
-                            sparkPrimaryTemp = nextIhkaSpark
-                        )
-
-                        val elapsedLoopMs = (System.nanoTime() - loopStart) / 1_000_000L
-                        val sleepMs = 1000L - elapsedLoopMs
-                        if (sleepMs > 20L) delay(sleepMs)
+                        val rem = 1000L - (System.nanoTime() - tLoop) / 1_000_000L
+                        if (rem > 20L) delay(rem)
                     }
                 }
             } catch (_: CancellationException) {
                 appendLog("[+] Saved ${csvFile.name} (${_ui.value.sampleCount} rows)")
             } catch (e: Exception) {
-                appendLog("[!] Logging stopped: ${e.message}")
+                appendLog("[!] Log error: ${e.message}")
             } finally {
                 _ui.value = _ui.value.copy(isLogging = false)
             }
         }
     }
 
-    fun stopActiveTask() {
-        activeJob?.cancel()
+    private fun fmtInt(v: Int): String = if (v >= 0) v.toString() else ""
+
+    fun runFlapCalibrationRoutine() {
+        if (!ble.isConnected || _ui.value.isBusy || _ui.value.isLogging) return
+        activeJob = viewModelScope.launch(Dispatchers.IO) {
+            _ui.value = _ui.value.copy(isBusy = true)
+            try {
+                appendLog("[*] Starting IHKA_G11 Flap Calibration (31 01 A1 24)...")
+                ble.bmwUdsRequest("1003")
+                val start = ble.bmwUdsRequest("3101A124")
+                if (start == null || (start[0].toInt() and 0xFF) != 0x71) {
+                    appendLog("[!] Calibration start rejected (ensure engine OFF, Diagnostic Mode ON).")
+                    return@launch
+                }
+                appendLog("[+] Flap sweep running! Polling 31 03 A1 24...")
+                for (i in 1..20) {
+                    delay(2000L)
+                    ble.bmwUdsRequest("3E00")
+                    val res = ble.bmwUdsRequest("3103A124")
+                    if (res != null && res.size >= 6) {
+                        val state = res[4].toInt() and 0xFF
+                        val result = res[5].toInt() and 0xFF
+                        appendLog("  [t=${i * 2}s] Status=$state (1=Running, 2=Done) | Result=$result (1=OK)")
+                        if (state == 2) {
+                            appendLog("[+] Flap Calibration Completed! (Result=${if (result == 1) "OK & Saved" else "NIO"})")
+                            break
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                appendLog("[!] Calibration error: ${e.message}")
+            } finally {
+                _ui.value = _ui.value.copy(isBusy = false)
+            }
+        }
     }
 
-    fun disconnectBle() {
-        activeJob?.cancel()
-        ble.disconnect()
-    }
+    fun stopActiveTask() { activeJob?.cancel() }
+    fun disconnectBle() { activeJob?.cancel(); ble.disconnect() }
 
     fun getLatestCsvFile(): File? {
         latestCsvFile?.takeIf { it.exists() }?.let { return it }
-        return app.getExternalFilesDir(null)
-            ?.listFiles { f -> f.name.endsWith(".csv") }
-            ?.maxByOrNull { it.lastModified() }
-    }
-
-    private suspend fun readBatteryVoltage(): Float? {
-        val raw = ble.cmd("ATRV", 800L)
-        val match = Regex("""(\d{1,2}(?:\.\d{1,2})?)\s*V?""", RegexOption.IGNORE_CASE).find(raw)
-        return match?.groupValues?.getOrNull(1)?.toFloatOrNull()?.takeIf { it in 5.0f..20.0f }
-    }
-
-    private suspend fun readStandardObd(): Triple<Int?, Int?, Int?> {
-        ble.setStandardObd()
-        var coolant: Int? = null
-        var amb: Int? = null
-        var rpm: Int? = null
-
-        val r05 = ble.cmd("0105", 1200L)
-        parseObdByte(r05, "4105")?.let { coolant = it - 40 }
-
-        val r46 = ble.cmd("0146", 1200L)
-        parseObdByte(r46, "4146")?.let { amb = it - 40 }
-
-        val r0C = ble.cmd("010C", 1200L)
-        parseObdWord(r0C, "410C")?.let { rpm = it / 4 }
-
-        return Triple(coolant, amb, rpm)
-    }
-
-    private fun parseObdByte(raw: String, marker: String): Int? {
-        for (line in raw.lineSequence()) {
-            val clean = line.uppercase().replace(Regex("[^0-9A-F]"), "")
-            val idx = clean.indexOf(marker)
-            if (idx != -1 && clean.length >= idx + 6) {
-                return clean.substring(idx + 4, idx + 6).toIntOrNull(16)
-            }
-        }
-        return null
-    }
-
-    private fun parseObdWord(raw: String, marker: String): Int? {
-        for (line in raw.lineSequence()) {
-            val clean = line.uppercase().replace(Regex("[^0-9A-F]"), "")
-            val idx = clean.indexOf(marker)
-            if (idx != -1 && clean.length >= idx + 8) {
-                return clean.substring(idx + 4, idx + 8).toIntOrNull(16)
-            }
-        }
-        return null
-    }
-
-    private fun decodeHint(vb: ByteArray): String {
-        if (vb.isEmpty()) return ""
-        return if (vb.size == 1) {
-            val b0 = vb[0].toInt() and 0xFF
-            if (b0 in 0..100) "${b0}% | ${b0 - 40}°C" else "${b0 - 40}°C"
-        } else {
-            val u16 = ((vb[0].toInt() and 0xFF) shl 8) or (vb[1].toInt() and 0xFF)
-            String.format(Locale.US, "%.1f°C", 0.1 * u16 - 40.0)
-        }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        ble.disconnect()
+        return app.getExternalFilesDir(null)?.listFiles { f -> f.name.endsWith(".csv") }?.maxByOrNull { it.lastModified() }
     }
 }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-        )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF101418)) {
@@ -474,20 +562,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
     val state by vm.ui.collectAsState()
+    val s = state.snap
     val context = LocalContext.current
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { grants ->
-        if (grants.values.all { it }) vm.connectAdapter()
-    }
+    ) { grants -> if (grants.values.all { it }) vm.connectAdapter() }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .safeDrawingPadding()
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .systemBarsPadding()
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -495,170 +582,123 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("BMW G31 540i · IHKA UDS", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                Text(state.connStatus, fontSize = 12.sp, color = Color(0xFF64B5F6))
+                Text("G31 540i · IHKA_G11 4-Zone (v7)", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("${state.connStatus} · Rows: ${state.sampleCount}", fontSize = 12.5.sp, color = Color(0xFF64B5F6))
             }
             Button(
                 onClick = {
-                    if (state.connStatus.startsWith("Connected")) {
-                        vm.disconnectBle()
-                    } else {
-                        permLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.BLUETOOTH_SCAN,
-                                Manifest.permission.BLUETOOTH_CONNECT
-                            )
-                        )
-                    }
+                    if (state.connStatus.startsWith("Connected")) vm.disconnectBle()
+                    else permLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
                 },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (state.connStatus.startsWith("Connected")) Color(0xFF455A64) else Color(0xFF1976D2)
-                )
-            ) {
-                Text(if (state.connStatus.startsWith("Connected")) "Disconnect" else "Connect CX")
-            }
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+            ) { Text(if (state.connStatus.startsWith("Connected")) "Disconnect" else "Connect CX", fontSize = 13.sp) }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            val battColor = when {
-                state.batteryV == null -> Color(0xFFCE93D8)
-                state.batteryV!! < 11.8f -> Color(0xFFEF5350)
-                state.batteryV!! < 12.2f -> Color(0xFFFFCA28)
-                else -> Color(0xFF66BB6A)
-            }
-            MetricTile("Battery", state.batteryV?.let { String.format(Locale.US, "%.1f V", it) } ?: "--", battColor, Modifier.weight(1f))
-            MetricTile("Coolant", state.coolantC?.let { "$it °C" } ?: "--", Color(0xFFEF5350), Modifier.weight(1f))
-            MetricTile("Ambient", state.ambientC?.let { "$it °C" } ?: "--", Color(0xFF4FC3F7), Modifier.weight(1f))
-            MetricTile("B58 RPM", state.rpm?.toString() ?: "--", Color(0xFFFFB74D), Modifier.weight(1f))
-            MetricTile("Rows", state.sampleCount.toString(), Color(0xFF81C784), Modifier.weight(0.75f))
+        // Row 1: Primary Global Sensors (12V Battery, Evaporator, Cabin, Windshield RLBS, Coolant)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            MetricTile("12V Bus", if (s.batteryV.isNaN()) "--" else "${"%.2f".format(Locale.US, s.batteryV)}V", Color(0xFF66BB6A), Modifier.weight(0.95f))
+            MetricTile("Evap", if (s.evapC.isNaN()) "--" else "${"%.1f".format(Locale.US, s.evapC)}°C", Color(0xFF29B6F6), Modifier.weight(0.95f))
+            MetricTile("Cabin", "${s.cabinC}°C", Color(0xFFFFCA28), Modifier.weight(0.85f))
+            MetricTile("Glass/RH", if (s.windshieldC.isNaN()) "--" else "${"%.0f".format(Locale.US, s.windshieldC)}°/${"%.0f".format(Locale.US, s.windshieldRh)}%", Color(0xFFBA68C8), Modifier.weight(1.15f))
+            MetricTile("Coolant", "${s.coolantC}°C", Color(0xFFEF5350), Modifier.weight(0.9f))
         }
 
-        OutlinedTextField(
-            value = state.didInput,
-            onValueChange = { vm.updateDidInput(it) },
-            enabled = !state.isLogging && !state.isBusy,
-            singleLine = true,
-            label = { Text("IHKA Hex DIDs (space-separated, or tap SWEEP)") },
-            modifier = Modifier.fillMaxWidth()
-        )
+        // Row 2: 4-Zone Duct Temperatures (Front & Rear Vents + Footwells)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            MetricTile("Fr Vent L/R", "${s.ventFrontL}/${s.ventFrontR}°C", Color(0xFF4DD0E1), Modifier.weight(1f))
+            MetricTile("Fr Foot L/R", "${s.footFrontL}/${s.footFrontR}°C", Color(0xFFFF8A65), Modifier.weight(1f))
+            MetricTile("Rr Vent L/R", "${s.ventRearL}/${s.ventRearR}°C", Color(0xFF81C784), Modifier.weight(1f))
+            MetricTile("Rr Foot L/R", "${s.footRearL}/${s.footRearR}°C", Color(0xFFFF7043), Modifier.weight(1f))
+        }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            OutlinedButton(
-                onClick = { vm.readIhkaInfoAndDtcs() },
-                enabled = !state.isBusy && !state.isLogging,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 10.dp)
-            ) { Text("DTCs", fontSize = 12.sp) }
+        // Row 3: Aircon Panel Settings (Target Temps, SYNC, Vent State AUTO/MAN + AC, Blower Step & %, Stratification)
+        val setFr = if (s.targetFrontL > 0) "${s.targetFrontL}/${s.targetFrontR}°" else "--"
+        val setRr = if (s.targetRearL > 0) "${s.targetRearL}/${s.targetRearR}°" else "--"
+        val syncTag = when (s.syncActive) { 1 -> "SYNC"; 0 -> "4Z"; else -> "" }
+        val blwStr = if (s.blowerStepL >= 0) {
+            val pct = if (s.blowerPctFront >= 0) " (${s.blowerPctFront}%)" else ""
+            "S${s.blowerStepL}/${s.blowerStepR}$pct"
+        } else "--"
+        val stratStr = if (s.stratL >= 0) "${s.stratL}/${s.stratR}%" else "--"
 
-            OutlinedButton(
-                onClick = { if (state.isBusy) vm.stopActiveTask() else vm.sweepIhkaDids() },
-                enabled = !state.isLogging,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 10.dp)
-            ) { Text(if (state.isBusy) "STOP" else "SWEEP", fontSize = 12.sp) }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            MetricTile("Set F/R ($syncTag)", "$setFr·$setRr", Color(0xFFFFEE58), Modifier.weight(1.25f))
+            MetricTile("Vent/AC Mode", s.ventStateSummary(), Color(0xFF26A69A), Modifier.weight(1.15f))
+            MetricTile("Fan Stp (%)", blwStr, Color(0xFF42A5F5), Modifier.weight(1.05f))
+            MetricTile("Strat L/R", stratStr, Color(0xFFAB47BC), Modifier.weight(0.85f))
+        }
 
+        // Row 4: Live Flap Positions (31 03 A1 22 Front & Rear), PTC Auxiliary Heater (31 03 A1 2B) & A/C Pressure
+        val ptcStr = if (!s.ptcDutyPct.isNaN()) {
+            val tPart = if (s.ptcTempC > -100) " ${s.ptcTempC}°C" else ""
+            "${"%.0f".format(Locale.US, s.ptcDutyPct)}%$tPart"
+        } else "--"
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            MetricTile("Def / Foot L·R", if (s.flapDefrost >= 0) "${s.flapDefrost}·${s.flapFootL}/${s.flapFootR}%" else "--", Color(0xFF90CAF9), Modifier.weight(1.15f))
+            MetricTile("Mix Fr L/R", if (s.flapMixL >= 0) "${s.flapMixL}/${s.flapMixR}%" else "--", Color(0xFFFFCC80), Modifier.weight(1.0f))
+            MetricTile("Mix Rr L/R", if (s.flapRearMixL >= 0) "${s.flapRearMixL}/${s.flapRearMixR}%" else "--", Color(0xFFA5D6A7), Modifier.weight(1.0f))
+            MetricTile("PTC Heater", ptcStr, Color(0xFFFF5252), Modifier.weight(1.05f))
+            MetricTile("A/C", "${s.acBar}b", Color(0xFFB0BEC5), Modifier.weight(0.65f))
+        }
+
+        // Action Buttons
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Button(
                 onClick = { if (state.isLogging) vm.stopActiveTask() else vm.startLogging() },
                 enabled = !state.isBusy,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (state.isLogging) Color(0xFFD32F2F) else Color(0xFF2E7D32)
-                ),
-                modifier = Modifier.weight(1.3f),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 10.dp)
-            ) { Text(if (state.isLogging) "STOP LOG" else "START LOG", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                colors = ButtonDefaults.buttonColors(containerColor = if (state.isLogging) Color(0xFFD32F2F) else Color(0xFF2E7D32)),
+                modifier = Modifier.weight(1.4f),
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) { Text(if (state.isLogging) "STOP LOG" else "START 1Hz LOG", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+
+            OutlinedButton(
+                onClick = { vm.runFlapCalibrationRoutine() },
+                enabled = !state.isLogging && !state.isBusy,
+                modifier = Modifier.weight(1.1f),
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) { Text("CALIB FLAPS", fontSize = 12.sp) }
 
             OutlinedButton(
                 onClick = {
                     val file = vm.getLatestCsvFile()
                     if (file != null) {
-                        val uri = FileProvider.getUriForFile(
-                            context,
-                            "${context.packageName}.fileprovider",
-                            file
-                        )
+                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                         val share = Intent(Intent.ACTION_SEND).apply {
                             type = "text/csv"
                             putExtra(Intent.EXTRA_STREAM, uri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
-                        context.startActivity(Intent.createChooser(share, "Export ${file.name}"))
+                        context.startActivity(Intent.createChooser(share, "Share ${file.name}"))
                     }
                 },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 10.dp)
-            ) { Text("SHARE", fontSize = 12.sp) }
+                modifier = Modifier.weight(0.9f),
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) { Text("SHARE CSV", fontSize = 12.sp) }
         }
 
         if (state.isLogging) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = { vm.flagCabinEvent("HOT_SWING") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100)),
-                    modifier = Modifier.weight(1f).height(48.dp)
-                ) { Text("MARK HOT BLAST", fontWeight = FontWeight.Bold) }
-
+                    modifier = Modifier.weight(1f).height(42.dp)
+                ) { Text("MARK HOT BLAST", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
                 Button(
                     onClick = { vm.flagCabinEvent("COLD_SWING") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0277BD)),
-                    modifier = Modifier.weight(1f).height(48.dp)
-                ) { Text("MARK COLD BLAST", fontWeight = FontWeight.Bold) }
+                    modifier = Modifier.weight(1f).height(42.dp)
+                ) { Text("MARK COLD BLAST", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
             }
         }
 
-        SparklineBox(
-            coolant = state.sparkCoolant,
-            ihkaTemp = state.sparkPrimaryTemp,
-            modifier = Modifier.fillMaxWidth().height(95.dp)
-        )
-
-        if (state.didReadings.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                for (card in state.didReadings.take(4)) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .background(Color(0xFF1C2229), RoundedCornerShape(8.dp))
-                            .padding(8.dp)
-                    ) {
-                        Text("0x${card.didHex}", fontSize = 11.sp, color = Color(0xFF90CAF9), fontFamily = FontFamily.Monospace)
-                        Text(card.decodedPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                        Text(card.rawHex, fontSize = 10.sp, color = Color.Gray, fontFamily = FontFamily.Monospace)
-                    }
-                }
-            }
-        }
+        SparklineBox(state.sparkEvap, state.sparkFootL, state.sparkWindshield, Modifier.fillMaxWidth().height(76.dp))
 
         LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .background(Color(0xFF0A0D10), RoundedCornerShape(8.dp))
-                .padding(8.dp)
+            modifier = Modifier.fillMaxWidth().weight(1f).background(Color(0xFF0A0D10), RoundedCornerShape(8.dp)).padding(8.dp)
         ) {
             items(state.consoleLines) { ln ->
-                Text(
-                    text = ln,
-                    fontSize = 11.5.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = when {
-                        ln.startsWith("[!]") -> Color(0xFFEF9A9A)
-                        ln.startsWith("[HIT]") || ln.startsWith("[+]") -> Color(0xFFA5D6A7)
-                        ln.startsWith("[MARKER]") -> Color(0xFFFFCC80)
-                        else -> Color(0xFFB0BEC5)
-                    }
-                )
+                Text(ln, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFB0BEC5))
             }
         }
     }
@@ -666,38 +706,24 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
 
 @Composable
 fun MetricTile(label: String, value: String, accent: Color, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .background(Color(0xFF1A2027), RoundedCornerShape(8.dp))
-            .padding(vertical = 8.dp, horizontal = 8.dp)
-    ) {
-        Text(label, fontSize = 11.sp, color = Color(0xFF90A4AE), maxLines = 1)
-        Text(value, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = accent, maxLines = 1)
+    Column(modifier = modifier.background(Color(0xFF1A2027), RoundedCornerShape(8.dp)).padding(vertical = 6.dp, horizontal = 6.dp)) {
+        Text(label, fontSize = 10.5.sp, color = Color(0xFF90A4AE), maxLines = 1)
+        Text(value, fontSize = 14.5.sp, fontWeight = FontWeight.Bold, color = accent, maxLines = 1)
     }
 }
 
 @Composable
-fun SparklineBox(coolant: List<Float>, ihkaTemp: List<Float>, modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .background(Color(0xFF161B21), RoundedCornerShape(8.dp))
-            .padding(8.dp)
-    ) {
-        if (coolant.size < 2 && ihkaTemp.size < 2) {
-            Text(
-                "Live 120s Sparkline (Red = B58 Coolant, Cyan = 1st IHKA Temp DID)",
-                fontSize = 11.sp,
-                color = Color(0xFF607D8B),
-                modifier = Modifier.align(Alignment.Center)
-            )
+fun SparklineBox(evap: List<Float>, footL: List<Float>, wsC: List<Float>, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.background(Color(0xFF161B21), RoundedCornerShape(8.dp)).padding(6.dp)) {
+        if (evap.size < 2) {
+            Text("120s Live Graph (Cyan=Evap, Orange=Footwell L, Purple=Windshield Glass)", fontSize = 11.sp, color = Color(0xFF607D8B), modifier = Modifier.align(Alignment.Center))
         } else {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val all = coolant + ihkaTemp
-                val minV = (all.minOrNull() ?: -10f) - 2f
-                val maxV = (all.maxOrNull() ?: 100f) + 2f
+                val all = evap + footL + wsC
+                val minV = (all.minOrNull() ?: -5f) - 2f
+                val maxV = (all.maxOrNull() ?: 55f) + 2f
                 val span = (maxV - minV).coerceAtLeast(1f)
-
-                fun drawTrace(pts: List<Float>, color: Color) {
+                fun drawLine(pts: List<Float>, color: Color) {
                     if (pts.size < 2) return
                     val path = Path()
                     pts.forEachIndexed { i, v ->
@@ -707,9 +733,9 @@ fun SparklineBox(coolant: List<Float>, ihkaTemp: List<Float>, modifier: Modifier
                     }
                     drawPath(path, color = color, style = Stroke(width = 3f))
                 }
-
-                drawTrace(coolant, Color(0xFFEF5350))
-                drawTrace(ihkaTemp, Color(0xFF29B6F6))
+                drawLine(evap, Color(0xFF29B6F6))
+                drawLine(footL, Color(0xFFFF8A65))
+                drawLine(wsC, Color(0xFFBA68C8))
             }
         }
     }

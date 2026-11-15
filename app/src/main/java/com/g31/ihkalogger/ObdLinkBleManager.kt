@@ -62,7 +62,6 @@ class ObdLinkBleManager(private val context: Context) {
                             if (cont.isActive) cont.resume(result.device)
                         }
                     }
-
                     override fun onScanFailed(errorCode: Int) {
                         if (cont.isActive) cont.cancel(RuntimeException("BLE scan error: $errorCode"))
                     }
@@ -91,7 +90,7 @@ class ObdLinkBleManager(private val context: Context) {
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 _connectionState.value = "Disconnected"
                 writeChar = null
-                connectDeferred?.completeExceptionally(RuntimeException("GATT disconnected (status=$status)"))
+                connectDeferred?.completeExceptionally(RuntimeException("GATT disconnected ($status)"))
                 promptDeferred?.completeExceptionally(RuntimeException("BLE link dropped"))
                 g.close()
                 if (gatt === g) gatt = null
@@ -112,7 +111,7 @@ class ObdLinkBleManager(private val context: Context) {
             val notifyC = svc?.getCharacteristic(NOTIFY_UUID)
             val writeC = svc?.getCharacteristic(WRITE_UUID)
             if (notifyC == null || writeC == null) {
-                connectDeferred?.completeExceptionally(RuntimeException("FFF0/FFF1/FFF2 UART profile missing"))
+                connectDeferred?.completeExceptionally(RuntimeException("FFF0/FFF1/FFF2 missing"))
                 return
             }
             writeChar = writeC
@@ -135,11 +134,8 @@ class ObdLinkBleManager(private val context: Context) {
 
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             if (descriptor.uuid == CCCD_UUID) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    connectDeferred?.complete(Unit)
-                } else {
-                    connectDeferred?.completeExceptionally(RuntimeException("CCCD subscribe failed ($status) - accept BLE bond prompt!"))
-                }
+                if (status == BluetoothGatt.GATT_SUCCESS) connectDeferred?.complete(Unit)
+                else connectDeferred?.completeExceptionally(RuntimeException("CCCD failed ($status)"))
             }
         }
 
@@ -170,7 +166,7 @@ class ObdLinkBleManager(private val context: Context) {
         }
     }
 
-    suspend fun cmd(command: String, timeoutMs: Long = 2000L): String = cmdMutex.withLock {
+    suspend fun cmd(command: String, timeoutMs: Long = 1500L): String = cmdMutex.withLock {
         val g = gatt ?: error("Not connected")
         val wc = writeChar ?: error("Write characteristic unavailable")
 
@@ -188,7 +184,7 @@ class ObdLinkBleManager(private val context: Context) {
             val wAck = CompletableDeferred<Boolean>()
             writeAckDeferred = wAck
 
-            val initiated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 g.writeCharacteristic(wc, slice, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
             } else {
                 @Suppress("DEPRECATION")
@@ -198,7 +194,7 @@ class ObdLinkBleManager(private val context: Context) {
                 @Suppress("DEPRECATION")
                 g.writeCharacteristic(wc)
             }
-            if (!initiated) error("BLE writeCharacteristic rejected")
+            if (!ok) error("BLE write rejected")
             withTimeout(1500L) { wAck.await() }
             offset = end
         }
@@ -213,85 +209,94 @@ class ObdLinkBleManager(private val context: Context) {
             .joinToString("\n")
     }
 
-    suspend fun initAdapter(): Pair<String, String> {
-        val elm = cmd("ATZ", 3000L)
+    suspend fun initBmwRawCan(): String {
+        cmd("ATD", 2000L)
         cmd("ATE0")
-        cmd("ATL0")
-        cmd("ATS0")
-        cmd("ATH1")
-        cmd("ATAT1")
-        cmd("ATST32")
-        val stn = cmd("STI")
-        return elm to stn
-    }
-
-    suspend fun setStandardObd() {
-        cmd("ATCEA")
-        cmd("ATSP6")
-        cmd("ATCAF1")
-        cmd("ATSH7DF")
-        cmd("ATCRA")
-    }
-
-    suspend fun setBmwEcu(targetAddr: Int = 0x78) {
-        val tgt = "%02X".format(targetAddr)
-        val rxId = "%03X".format(0x600 + targetAddr)
-        cmd("ATSP6")
-        cmd("ATCAF1")
-        cmd("ATCERF1")
-        val res = cmd("ATCEA$tgt")
-        if ("?" in res) error("Adapter rejected ATCEA$tgt: $res")
         cmd("ATSH6F1")
-        cmd("ATCRA$rxId")
-        cmd("ATFCSH6F1")
-        cmd("ATFCSD${tgt}300000")
-        cmd("ATFCSM1")
+        cmd("ATCF600")
+        cmd("ATCM700")
+        cmd("ATPBC001")
+        cmd("ATSPB")
+        cmd("ATAT0")
+        cmd("ATST32")
+        cmd("ATAL")
+        cmd("ATH1")
+        cmd("ATS0")
+        cmd("ATL0")
+        cmd("ATCSM0")
+        cmd("ATJE")
+        cmd("ATCAF0")
+        return cmd("STI")
     }
 
-    suspend fun udsRequest(reqHex: String, expectedRxId: String = "678", timeoutMs: Long = 1800L): ByteArray? {
-        val raw = cmd(reqHex, timeoutMs)
-        val parsed = parseIsoTp(raw, expectedRxId) ?: return null
-        if (parsed.isEmpty() || (parsed[0].toInt() and 0xFF) == 0x7F) return null
-        return parsed
+    /**
+     * Reads 12V OBD pin-16 supply voltage directly from the OBDLink CX ADC via `ATRV`
+     * without disturbing the active `ATSPB` / `0x6F1` raw CAN configuration.
+     */
+    suspend fun readBatteryVoltage(): Float {
+        val raw = runCatching { cmd("ATRV", 600L) }.getOrNull() ?: return Float.NaN
+        val m = Regex("([0-9]+(?:[.,][0-9]+)?)").find(raw) ?: return Float.NaN
+        return m.groupValues[1].replace(',', '.').toFloatOrNull() ?: Float.NaN
     }
 
-    fun parseIsoTp(rawResp: String, expectedRxId: String = "678"): ByteArray? {
-        if (rawResp.isBlank()) return null
-        val upper = rawResp.uppercase()
-        if (listOf("NO DATA", "ERROR", "UNABLE", "?", "CAN ERROR").any { it in upper }) return null
+    suspend fun bmwUdsRequest(udsHex: String, ecuAddr: Int = 0x78): ByteArray? {
+        val cleanUds = udsHex.uppercase().replace(Regex("[^0-9A-F]"), "")
+        val byteLen = cleanUds.length / 2
+        if (byteLen !in 1..6) return null
 
-        val frames = mutableListOf<ByteArray>()
-        for (line in upper.lineSequence()) {
-            val clean = line.replace(Regex("[^0-9A-F]"), "")
-            if (!clean.startsWith(expectedRxId) || clean.length < 7) continue
-            if (clean.substring(3, 5) != "F1") continue
-            val payloadHex = clean.substring(5)
-            if (payloadHex.length % 2 == 0) {
-                frames.add(payloadHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray())
-            }
+        val tgt = "%02X".format(ecuAddr)
+        val rxPrefix = "%03XF1".format(0x600 + ecuAddr)
+        val sfFrame = ("$tgt%02X$cleanUds".format(byteLen)).padEnd(16, '0')
+
+        val firstRaw = cmd(sfFrame, 1200L)
+        val lines = parseHexLines(firstRaw, rxPrefix).toMutableList()
+        if (lines.isEmpty()) return null
+
+        val firstPayload = lines[0]
+        val pciType = (firstPayload[0].toInt() ushr 4) and 0x0F
+
+        if (pciType == 0x0) {
+            val len = firstPayload[0].toInt() and 0x0F
+            if (firstPayload.size < 1 + len) return null
+            val udsResp = firstPayload.copyOfRange(1, 1 + len)
+            return if ((udsResp[0].toInt() and 0xFF) == 0x7F) null else udsResp
         }
-        if (frames.isEmpty()) return null
 
-        val first = frames[0]
-        val pciType = (first[0].toInt() ushr 4) and 0x0F
-        return when (pciType) {
-            0x0 -> {
-                val len = first[0].toInt() and 0x0F
-                if (first.size >= 1 + len) first.copyOfRange(1, 1 + len) else null
-            }
-            0x1 -> {
-                val totalLen = ((first[0].toInt() and 0x0F) shl 8) or (first[1].toInt() and 0xFF)
-                val out = ArrayList<Byte>(totalLen)
-                for (i in 2 until first.size) out.add(first[i])
-                for (cf in frames.drop(1)) {
+        if (pciType == 0x1) {
+            val totalLen = ((firstPayload[0].toInt() and 0x0F) shl 8) or (firstPayload[1].toInt() and 0xFF)
+            val data = ArrayList<Byte>(totalLen)
+            for (i in 2 until firstPayload.size) data.add(firstPayload[i])
+
+            while (data.size < totalLen) {
+                val fcRaw = cmd("${tgt}30030000000000", 1200L)
+                val cfList = parseHexLines(fcRaw, rxPrefix)
+                if (cfList.isEmpty()) break
+                for (cf in cfList) {
                     if (cf.isNotEmpty() && ((cf[0].toInt() ushr 4) and 0x0F) == 0x2) {
-                        for (i in 1 until cf.size) out.add(cf[i])
+                        for (i in 1 until cf.size) {
+                            if (data.size < totalLen) data.add(cf[i])
+                        }
                     }
                 }
-                out.take(totalLen).toByteArray()
             }
-            else -> null
+            val udsResp = data.toByteArray()
+            return if (udsResp.isEmpty() || (udsResp[0].toInt() and 0xFF) == 0x7F) null else udsResp
         }
+        return null
+    }
+
+    private fun parseHexLines(raw: String, prefix: String): List<ByteArray> {
+        val out = mutableListOf<ByteArray>()
+        for (line in raw.uppercase().lineSequence()) {
+            val clean = line.replace(Regex("[^0-9A-F]"), "")
+            if (clean.startsWith(prefix) && clean.length >= prefix.length + 2) {
+                val body = clean.substring(prefix.length)
+                if (body.length % 2 == 0) {
+                    out.add(body.chunked(2).map { it.toInt(16).toByte() }.toByteArray())
+                }
+            }
+        }
+        return out
     }
 
     fun disconnect() {
