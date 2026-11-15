@@ -17,3 +17,8 @@ local.properties
 
 # Deep OBD dump (proprietary BMW ECU data + vehicle-specific config)
 /Deep_OBD_Dump/
+
+# Release signing (never commit)
+*.jks
+*.keystore
+keystore.properties

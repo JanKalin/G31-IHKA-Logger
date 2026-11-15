@@ -1,8 +1,22 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// Release signing: CI passes these as environment variables; locally they can live in an
+// untracked keystore.properties (storeFile, storePassword, keyAlias, keyPassword).
+// If neither is present, the release build is simply left unsigned.
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signingValue(env: String, prop: String): String? =
+    System.getenv(env)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(prop)
+
+val releaseStoreFile = signingValue("ANDROID_KEYSTORE_FILE", "storeFile")
 
 android {
     namespace = "com.g31.ihkalogger"
@@ -12,12 +26,25 @@ android {
         applicationId = "com.g31.ihkalogger"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // CI overrides these from the git tag: -PversionCode=N -PversionName=X.Y.Z
+        versionCode = (findProperty("versionCode") as String?)?.toInt() ?: 1
+        versionName = (findProperty("versionName") as String?) ?: "1.0"
+    }
+
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile)
+                storePassword = signingValue("ANDROID_KEYSTORE_PASSWORD", "storePassword")
+                keyAlias = signingValue("ANDROID_KEY_ALIAS", "keyAlias")
+                keyPassword = signingValue("ANDROID_KEY_PASSWORD", "keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
