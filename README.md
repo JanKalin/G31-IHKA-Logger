@@ -130,4 +130,4 @@ The plotter detects 2-zone vs 4-zone from the data: logs from 2-zone cars have e
 
 ## License
 
-Free for any use, including internal company use. Selling the software or including it in paid products or services is not allowed without permission. See [LICENSE](LICENSE) for the full terms.
+Free for any use, including internal company use. Selling the software or including it in paid products or services is not allowed without permission. See [LICENSE](LICENSE.md) for the full terms.
