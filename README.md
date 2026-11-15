@@ -75,7 +75,7 @@ All 8 outlet duct thermistors are read in a single multi-frame burst from `DID 0
 
 ### Action Buttons Explained
 
-* **`START 1Hz LOG` / `STOP LOG`:** Starts/stops writing all **47 decoded telemetry columns** at 1 sample per second to `/Android/data/com.g31.ihkalogger/files/g31_ihka_4zone_YYYYMMDD_HHMMSS.csv`.
+* **`START 1Hz LOG` / `STOP LOG`:** Starts/stops writing all **57 telemetry columns** at 1 sample per second to `/Android/data/com.g31.ihkalogger/files/g31_ihka_4zone_YYYYMMDD_HHMMSS.csv`.
 * **`CALIB FLAPS` (`UDS 31 01 A1 24`):**
   * **Why it is here:** Earlier in our troubleshooting, you asked how to run BMW's **"Flap Motor End-Stop Calibration"** (`KLAPPENMOTOR_KALIBRIERLAUF`) without paying $99 for ProTool or installing a 150 GB ISTA+ setup. This button executes that exact factory service routine (`31 01 A1 24` followed by `31 03 A1 24` status polling) for free!
   * **When to use it:** Only if you ever replace a stepper motor, unplug the climate housing, or suspect a flap has lost its 0%/100% mechanical end-stops. *(Run with ignition in **Diagnostic Mode, engine OFF**; disabled automatically while logging).*

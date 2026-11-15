@@ -247,10 +247,24 @@ class ObdLinkBleManager(private val context: Context) {
         val tgt = "%02X".format(ecuAddr)
         val rxPrefix = "%03XF1".format(0x600 + ecuAddr)
         val sfFrame = ("$tgt%02X$cleanUds".format(byteLen)).padEnd(16, '0')
+        val reqSid = cleanUds.substring(0, 2).toInt(16)
 
-        val firstRaw = cmd(sfFrame, 1200L)
-        val lines = parseHexLines(firstRaw, rxPrefix).toMutableList()
+        var lines = parseHexLines(cmd(sfFrame, 1200L), rxPrefix)
         if (lines.isEmpty()) return null
+
+        // NRC 0x78 (responsePending): the ECU is still working and will send the real reply later
+        // (up to P2* = 5 s). The adapter only listens for replies right after it sends something, so
+        // keep the listen window open with silent TesterPresent (3E 80 = no positive response).
+        var pendingPolls = 0
+        while (true) {
+            val idx = lines.indexOfFirst { !isResponsePending(it, reqSid) }
+            if (idx >= 0) {
+                lines = lines.subList(idx, lines.size)
+                break
+            }
+            if (++pendingPolls > 25) return null
+            lines = parseHexLines(cmd("${tgt}023E800000000000", 1200L), rxPrefix)
+        }
 
         val firstPayload = lines[0]
         val pciType = (firstPayload[0].toInt() ushr 4) and 0x0F
@@ -284,6 +298,14 @@ class ObdLinkBleManager(private val context: Context) {
         }
         return null
     }
+
+    /** Single frame `03 7F <sid> 78` = negative response "requestCorrectlyReceived-ResponsePending". */
+    private fun isResponsePending(frame: ByteArray, reqSid: Int): Boolean =
+        frame.size >= 4 &&
+            (frame[0].toInt() and 0xFF) == 0x03 &&
+            (frame[1].toInt() and 0xFF) == 0x7F &&
+            (frame[2].toInt() and 0xFF) == reqSid &&
+            (frame[3].toInt() and 0xFF) == 0x78
 
     private fun parseHexLines(raw: String, prefix: String): List<ByteArray> {
         val out = mutableListOf<ByteArray>()

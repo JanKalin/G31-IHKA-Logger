@@ -34,7 +34,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -56,8 +58,8 @@ data class IhkaSnapshot(
     val outsideC: Float = Float.NaN,
     val windshieldC: Float = Float.NaN,
     val windshieldRh: Float = Float.NaN,
-    val acBar: Int = 0,
-    val coolantC: Int = 0,
+    val acBar: Int? = null,
+    val coolantC: Int? = null,
     // DID 0xD8DB: Active Aircon Settings & Blower Steps
     val acOn: Int = -1,
     val maxAcOn: Int = -1,
@@ -140,38 +142,37 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
     val ui: StateFlow<UiState> = _ui
 
     private var activeJob: Job? = null
-    @Volatile private var pendingMarker: String = ""
+    private val pendingMarker = AtomicReference("")
     private var latestCsvFile: File? = null
 
     init {
         viewModelScope.launch {
             ble.connectionState.collect { st ->
-                _ui.value = _ui.value.copy(connStatus = st)
+                _ui.update { it.copy(connStatus = st) }
             }
         }
     }
 
     fun flagCabinEvent(tag: String) {
-        pendingMarker = tag
+        pendingMarker.set(tag)
         appendLog("[MARKER] Queued '$tag' for next 1 Hz CSV row")
     }
 
     private fun appendLog(msg: String) {
-        val updated = (listOf(msg) + _ui.value.consoleLines).take(120)
-        _ui.value = _ui.value.copy(consoleLines = updated)
+        _ui.update { it.copy(consoleLines = (listOf(msg) + it.consoleLines).take(120)) }
     }
 
     fun connectAdapter() {
         if (_ui.value.isBusy || _ui.value.isLogging) return
         activeJob = viewModelScope.launch(Dispatchers.IO) {
-            _ui.value = _ui.value.copy(isBusy = true)
+            _ui.update { it.copy(isBusy = true) }
             try {
                 ble.scanAndConnect()
                 val stn = ble.initBmwRawCan()
                 appendLog("[+] Ready (Deep OBD Raw CAN Mode): $stn")
                 val snap = pollOnce()
                 if (snap != null) {
-                    _ui.value = _ui.value.copy(snap = snap)
+                    _ui.update { it.copy(snap = snap) }
                     val vStr = if (snap.batteryV.isNaN()) "--" else "%.2fV".format(Locale.US, snap.batteryV)
                     val ptcStr = if (snap.ptcDutyPct.isNaN()) "--" else "%.0f%%".format(Locale.US, snap.ptcDutyPct)
                     appendLog(
@@ -184,7 +185,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 appendLog("[!] Connect error: ${e.message}")
             } finally {
-                _ui.value = _ui.value.copy(isBusy = false)
+                _ui.update { it.copy(isBusy = false) }
             }
         }
     }
@@ -212,8 +213,8 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
         var outsideC = Float.NaN
         var wsC = Float.NaN
         var wsRh = Float.NaN
-        var acBar = 0
-        var coolantC = 0
+        var acBar: Int? = null
+        var coolantC: Int? = null
 
         val rD9 = ble.bmwUdsRequest("22D8D9")
         if (rD9 != null && rD9.size >= 13 && (rD9[0].toInt() and 0xFF) == 0x62) {
@@ -392,10 +393,12 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
         latestCsvFile = csvFile
 
         activeJob = viewModelScope.launch(Dispatchers.IO) {
-            _ui.value = _ui.value.copy(
-                isLogging = true, sampleCount = 0,
-                sparkEvap = emptyList(), sparkFootL = emptyList(), sparkWindshield = emptyList()
-            )
+            _ui.update {
+                it.copy(
+                    isLogging = true, sampleCount = 0,
+                    sparkEvap = emptyList(), sparkFootL = emptyList(), sparkWindshield = emptyList()
+                )
+            }
             appendLog("[*] Logging 1 Hz G31 4-Zone telemetry + PTC + Flaps -> ${csvFile.name}")
 
             val headers = listOf(
@@ -430,7 +433,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
                     while (isActive) {
                         val tLoop = System.nanoTime()
                         val elapsed = (tLoop - t0) / 1_000_000_000.0
-                        val marker = pendingMarker.also { pendingMarker = "" }
+                        val marker = pendingMarker.get()
 
                         val s = pollOnce()
                         if (s != null) {
@@ -448,8 +451,8 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
                                 if (s.outsideC.isNaN()) "" else "%.1f".format(Locale.US, s.outsideC),
                                 if (s.windshieldC.isNaN()) "" else "%.1f".format(Locale.US, s.windshieldC),
                                 if (s.windshieldRh.isNaN()) "" else "%.1f".format(Locale.US, s.windshieldRh),
-                                s.acBar.toString(),
-                                s.coolantC.toString(),
+                                s.acBar?.toString() ?: "",
+                                s.coolantC?.toString() ?: "",
                                 // Aircon Settings & State
                                 fmtInt(s.targetFrontL), fmtInt(s.targetFrontR),
                                 fmtInt(s.targetRearL), fmtInt(s.targetRearR),
@@ -476,14 +479,18 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
                             writer.flush()
                             count++
 
-                            val cur = _ui.value
-                            _ui.value = cur.copy(
-                                sampleCount = count,
-                                snap = s,
-                                sparkEvap = (cur.sparkEvap + s.evapC).takeLast(120),
-                                sparkFootL = (cur.sparkFootL + s.footFrontL.toFloat()).takeLast(120),
-                                sparkWindshield = if (!s.windshieldC.isNaN()) (cur.sparkWindshield + s.windshieldC).takeLast(120) else cur.sparkWindshield
-                            )
+                            // Row is on disk -> consume the marker (unless the user queued a new one meanwhile)
+                            pendingMarker.compareAndSet(marker, "")
+
+                            _ui.update { cur ->
+                                cur.copy(
+                                    sampleCount = count,
+                                    snap = s,
+                                    sparkEvap = (cur.sparkEvap + s.evapC).takeLast(120),
+                                    sparkFootL = (cur.sparkFootL + s.footFrontL.toFloat()).takeLast(120),
+                                    sparkWindshield = if (!s.windshieldC.isNaN()) (cur.sparkWindshield + s.windshieldC).takeLast(120) else cur.sparkWindshield
+                                )
+                            }
                         }
                         val rem = 1000L - (System.nanoTime() - tLoop) / 1_000_000L
                         if (rem > 20L) delay(rem)
@@ -494,7 +501,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 appendLog("[!] Log error: ${e.message}")
             } finally {
-                _ui.value = _ui.value.copy(isLogging = false)
+                _ui.update { it.copy(isLogging = false) }
             }
         }
     }
@@ -504,7 +511,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
     fun runFlapCalibrationRoutine() {
         if (!ble.isConnected || _ui.value.isBusy || _ui.value.isLogging) return
         activeJob = viewModelScope.launch(Dispatchers.IO) {
-            _ui.value = _ui.value.copy(isBusy = true)
+            _ui.update { it.copy(isBusy = true) }
             try {
                 appendLog("[*] Starting IHKA_G11 Flap Calibration (31 01 A1 24)...")
                 ble.bmwUdsRequest("1003")
@@ -531,7 +538,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 appendLog("[!] Calibration error: ${e.message}")
             } finally {
-                _ui.value = _ui.value.copy(isBusy = false)
+                _ui.update { it.copy(isBusy = false) }
             }
         }
     }
@@ -600,7 +607,7 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             MetricTile("Evap", if (s.evapC.isNaN()) "--" else "${"%.1f".format(Locale.US, s.evapC)}°C", Color(0xFF29B6F6), Modifier.weight(0.95f))
             MetricTile("Cabin", "${s.cabinC}°C", Color(0xFFFFCA28), Modifier.weight(0.85f))
             MetricTile("Glass/RH", if (s.windshieldC.isNaN()) "--" else "${"%.0f".format(Locale.US, s.windshieldC)}°/${"%.0f".format(Locale.US, s.windshieldRh)}%", Color(0xFFBA68C8), Modifier.weight(1.15f))
-            MetricTile("Coolant", "${s.coolantC}°C", Color(0xFFEF5350), Modifier.weight(0.9f))
+            MetricTile("Coolant", s.coolantC?.let { "$it°C" } ?: "--", Color(0xFFEF5350), Modifier.weight(0.9f))
         }
 
         // Row 2: 4-Zone Duct Temperatures (Front & Rear Vents + Footwells)
@@ -639,7 +646,7 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             MetricTile("Mix Fr L/R", if (s.flapMixL >= 0) "${s.flapMixL}/${s.flapMixR}%" else "--", Color(0xFFFFCC80), Modifier.weight(1.0f))
             MetricTile("Mix Rr L/R", if (s.flapRearMixL >= 0) "${s.flapRearMixL}/${s.flapRearMixR}%" else "--", Color(0xFFA5D6A7), Modifier.weight(1.0f))
             MetricTile("PTC Heater", ptcStr, Color(0xFFFF5252), Modifier.weight(1.05f))
-            MetricTile("A/C", "${s.acBar}b", Color(0xFFB0BEC5), Modifier.weight(0.65f))
+            MetricTile("A/C", s.acBar?.let { "${it}b" } ?: "--", Color(0xFFB0BEC5), Modifier.weight(0.65f))
         }
 
         // Action Buttons
