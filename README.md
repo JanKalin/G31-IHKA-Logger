@@ -20,7 +20,7 @@ Custom Android (Kotlin / Jetpack Compose) + Python diagnostic suite for **BMW G3
 2. **Wake the Vehicle:**
    * **Driving Log:** Start the engine normally.
    * **Engine-Off Diagnostic Mode (for static inspection or Flap Calibration):** With your foot **OFF** the brake pedal, press the **Start/Stop button 3 times rapidly** until the instrument cluster displays *"Diagnostic mode active"*.
-3. **Connect:** Open **G30/G31 IHKA Logger** on your Android phone and tap **`Connect CX`**. Grant Bluetooth permissions if prompted. The status line will show `Connected (MTU ...)` and print the initial live snapshot in the bottom console.
+3. **Connect:** Open **IHKA Logger** on your Android phone and tap **`Connect CX`**. Grant Bluetooth permissions if prompted. The status line will show `Connected (MTU ...)` and print the initial live snapshot in the bottom console.
 4. **Check the zone count:** The title shows **`2-zone`** or **`4-zone`**, auto-detected from the first few readings (see [Header & Zone Selector](#header--zone-selector)). If it is wrong for your car, pick the correct one from the zone button in the header — the choice is remembered.
 5. **Record 1 Hz Telemetry:** Tap **`START 1Hz LOG`**.
    * Whenever you feel an uncommanded wave of hot air (footwells or windshield), tap **`MARK HOT BLAST`**.
@@ -36,7 +36,7 @@ The Android dashboard is organized into a header, **4 rows of live metric tiles*
 
 ### Header & Zone Selector
 
-* **Title — `G30/G31 IHKA 2-zone Logger` / `4-zone Logger`:** the zone count currently in effect.
+* **Title — `IHKA 2-zone Logger` / `4-zone Logger`:** the zone count currently in effect.
 * **Status line:** Bluetooth connection state and the number of CSV rows recorded in the current log.
 * **Zone button (`Auto: 4Z`, `Auto: 2Z`, `Auto: ?`, `2Z`, `4Z`):** opens a menu with **Auto-detect**, **2-Zone** and **4-Zone**. The selection is saved and survives app restarts.
   * **Auto-detect** uses the rear duct sensor bytes `6..9` of `DID 0xD8D7`. The `ihka_g11.prg` variant is shared by 2-zone and 4-zone modules and always returns the full array, but on a 2-zone car those unpopulated channels read `0x80` or `0x00`. Any valid rear reading locks in **4-zone** for the session; **2-zone** is chosen only after 3 consecutive samples with all four rear bytes unpopulated (a real 4-zone duct at exactly 0°C also reads `0x00`). Until a decision is made the app assumes 4-zone (`Auto: ?`). The detection result is printed in the console.
