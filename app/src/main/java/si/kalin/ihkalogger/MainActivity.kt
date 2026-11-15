@@ -1,4 +1,4 @@
-package com.g31.ihkalogger
+package si.kalin.ihkalogger
 
 import android.Manifest
 import android.app.Application
@@ -46,7 +46,7 @@ import java.util.Locale
 
 data class IhkaSnapshot(
     val batteryV: Float = Float.NaN,
-    // DID 0xD8D7: 10 4-Zone Temperatures
+    // DID 0xD8D7: duct/cabin temperatures (rear ducts only populated on 4-zone cars)
     val evapC: Float = Float.NaN,
     val cabinC: Int = 0,
     val ventFrontL: Int = 0,
@@ -245,7 +245,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
     private suspend fun pollOnce(): IhkaSnapshot? {
         val battV = ble.readBatteryVoltage()
 
-        // 1. DID 0xD8D7: 10 4-Zone Temperatures
+        // 1. DID 0xD8D7: duct/cabin temperatures (rear ducts only populated on 4-zone cars)
         val rD7 = ble.bmwUdsRequest("22D8D7") ?: return null
         if (rD7.size < 14 || (rD7[0].toInt() and 0xFF) != 0x62) return null
         val d7 = rD7.copyOfRange(3, rD7.size)
@@ -448,7 +448,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
             return
         }
         val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-        val csvFile = File(app.getExternalFilesDir(null), "g31_ihka_4zone_$stamp.csv")
+        val csvFile = File(app.getExternalFilesDir(null), "ihka_log_$stamp.csv")
 
         activeJob = viewModelScope.launch(Dispatchers.IO) {
             _ui.update {
@@ -504,8 +504,8 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
                                 s.cabinC.toString(),
                                 s.ventFrontL.toString(), s.ventFrontR.toString(),
                                 s.footFrontL.toString(), s.footFrontR.toString(),
-                                s.ventRearL.toString(), s.ventRearR.toString(),
-                                s.footRearL.toString(), s.footRearR.toString(),
+                                fmtTemp(s.ventRearL), fmtTemp(s.ventRearR),
+                                fmtTemp(s.footRearL), fmtTemp(s.footRearR),
                                 if (s.outsideC.isNaN()) "" else "%.1f".format(Locale.US, s.outsideC),
                                 if (s.windshieldC.isNaN()) "" else "%.1f".format(Locale.US, s.windshieldC),
                                 if (s.windshieldRh.isNaN()) "" else "%.1f".format(Locale.US, s.windshieldRh),
@@ -565,6 +565,8 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     private fun fmtInt(v: Int): String = if (v >= 0) v.toString() else ""
+    /** Signed temperature; -999 (no sensor / 2-zone car) becomes an empty cell like other missing values. */
+    private fun fmtTemp(v: Int): String = if (v == -999) "" else v.toString()
 
     fun runFlapCalibrationRoutine() {
         if (!ble.isConnected || _ui.value.isBusy || _ui.value.isLogging) return
@@ -910,7 +912,7 @@ fun CsvShareDialog(entries: List<CsvEntry>, onDismiss: () -> Unit, onShare: (Lis
 private val CSV_STAMP_IN = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
 private val CSV_STAMP_OUT = DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm:ss")
 
-/** "g31_ihka_4zone_20261115_143005.csv" -> "2026-11-15  14:30:05"; falls back to the raw file name. */
+/** "ihka_log_20261115_143005.csv" (or legacy "g31_ihka_4zone_…") -> "2026-11-15  14:30:05"; falls back to the raw file name. */
 fun csvDisplayName(file: File): String {
     val stamp = Regex("""(\d{8}_\d{6})\.csv$""").find(file.name)?.groupValues?.get(1) ?: return file.name
     return runCatching { LocalDateTime.parse(stamp, CSV_STAMP_IN).format(CSV_STAMP_OUT) }.getOrDefault(file.name)

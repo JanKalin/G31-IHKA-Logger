@@ -19,11 +19,11 @@ fun signingValue(env: String, prop: String): String? =
 val releaseStoreFile = signingValue("ANDROID_KEYSTORE_FILE", "storeFile")
 
 android {
-    namespace = "com.g31.ihkalogger"
+    namespace = "si.kalin.ihkalogger"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.g31.ihkalogger"
+        applicationId = "si.kalin.ihkalogger"
         minSdk = 31
         targetSdk = 35
         // CI overrides these from the git tag: -PversionCode=N -PversionName=X.Y.Z

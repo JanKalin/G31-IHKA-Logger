@@ -1,8 +1,18 @@
-# BMW G31 540i · 4-Zone Climate (`IHKA_G11`) Telemetry Logger & Analyzer (v7)
+# G30/G31 IHKA Logger · BMW Climate (`IHKA_G11`) Telemetry Logger & Analyzer
 
-Custom Android (Kotlin / Jetpack Compose) + Python diagnostic suite for the **BMW G31 540i Touring** equipped with **4-Zone Automatic Climate Control (`S4NBA`)** and an **OBDLink CX (Bluetooth LE / `STN2310`)** adapter.
+Custom Android (Kotlin / Jetpack Compose) + Python diagnostic suite for **BMW G30 / G31 5 Series** cars with **2-Zone or 4-Zone Automatic Climate Control** (4-zone = option `S4NBA`) and an **OBDLink CX (Bluetooth LE / `STN2310`)** adapter. Developed and tested on a G31 540i Touring with 4-zone climate.
 
 All UDS Data Identifiers (`0x22`), Routine Control Identifiers (`0x31`), byte offsets, and scaling formulas in this project are extracted directly from BMW's factory **`ihka_g11.prg`** ECU description file (`ECU 0x78` on CAN ID `0x6F1` -> `0x678`).
+
+---
+
+## 0. Installation
+
+**Requirements:** Android 12 or newer (`minSdk 31`) with Bluetooth LE, and an OBDLink CX adapter.
+
+1. Open the repository's **[Releases](https://github.com/JanKalin/G31-IHKA-Logger/releases)** page on your phone and download the latest `G30-G31-IHKA-Logger-X.Y.Z.apk`.
+2. Open the downloaded file. Android will ask you to allow your browser / file manager to *install unknown apps* — allow it once, then confirm the install.
+3. **Updates:** download and install the newer APK over the old one (your logs are kept). For automatic update notifications, add the repository URL to [Obtainium](https://github.com/ImranR98/Obtainium), which tracks GitHub Releases.
 
 ---
 
@@ -10,43 +20,53 @@ All UDS Data Identifiers (`0x22`), Routine Control Identifiers (`0x31`), byte of
 
 1. **Plug in OBDLink CX** into the driver-side footwell OBD-II port.
 2. **Wake the Vehicle:**
-   * **Driving Log:** Start the B58 engine normally.
+   * **Driving Log:** Start the engine normally.
    * **Engine-Off Diagnostic Mode (for static inspection or Flap Calibration):** With your foot **OFF** the brake pedal, press the **Start/Stop button 3 times rapidly** until the instrument cluster displays *"Diagnostic mode active"*.
-3. **Connect:** Open **G31 IHKA Logger** on your Android phone and tap **`Connect CX`**. Grant Bluetooth permissions if prompted. The status line will show `Connected (MTU ...)` and print the initial live snapshot in the bottom console.
-4. **Record 1 Hz Telemetry:** Tap **`START 1Hz LOG`**.
+3. **Connect:** Open **G30/G31 IHKA Logger** on your Android phone and tap **`Connect CX`**. Grant Bluetooth permissions if prompted. The status line will show `Connected (MTU ...)` and print the initial live snapshot in the bottom console.
+4. **Check the zone count:** The title shows **`2-zone`** or **`4-zone`**, auto-detected from the first few readings (see [Header & Zone Selector](#header--zone-selector)). If it is wrong for your car, pick the correct one from the zone button in the header — the choice is remembered.
+5. **Record 1 Hz Telemetry:** Tap **`START 1Hz LOG`**.
    * Whenever you feel an uncommanded wave of hot air (footwells or windshield), tap **`MARK HOT BLAST`**.
    * Whenever you feel an uncommanded wave of cold air, tap **`MARK COLD BLAST`**.
    * These buttons inject `HOT_SWING` and `COLD_SWING` markers into the next 1 Hz CSV row so the Python analyzer draws vertical reference lines across all 5 graphs at the exact second you felt the change.
-5. **Stop & Export:** Tap **`STOP LOG`**, then tap **`SHARE CSV`** to send `g31_ihka_4zone_YYYYMMDD_HHMMSS.csv` via Google Drive, Gmail, WhatsApp, or Nearby Share to your PC.
+6. **Stop & Export:** Tap **`STOP LOG`**, then tap **`SHARE CSV`**, tick the logs you want (logs not yet shared are pre-selected), and send them via Google Drive, Gmail, WhatsApp, or Nearby Share to your PC.
 
 ---
 
 ## 2. Complete Screen Reference ("User Manual" for Every Tile)
 
-The Android dashboard is organized into **4 rows of live metric tiles**, followed by the action bar, 120-second live sparkline graph, and raw UDS log console.
+The Android dashboard is organized into a header, **4 rows of live metric tiles**, the action bar, a 120-second live sparkline graph, and the raw UDS log console. Values that are unavailable are shown as **`--`**.
+
+### Header & Zone Selector
+
+* **Title — `G30/G31 IHKA 2-zone Logger` / `4-zone Logger`:** the zone count currently in effect.
+* **Status line:** Bluetooth connection state and the number of CSV rows recorded in the current log.
+* **Zone button (`Auto: 4Z`, `Auto: 2Z`, `Auto: ?`, `2Z`, `4Z`):** opens a menu with **Auto-detect**, **2-Zone** and **4-Zone**. The selection is saved and survives app restarts.
+  * **Auto-detect** uses the rear duct sensor bytes `6..9` of `DID 0xD8D7`. The `ihka_g11.prg` variant is shared by 2-zone and 4-zone modules and always returns the full array, but on a 2-zone car those unpopulated channels read `0x80` or `0x00`. Any valid rear reading locks in **4-zone** for the session; **2-zone** is chosen only after 3 consecutive samples with all four rear bytes unpopulated (a real 4-zone duct at exactly 0°C also reads `0x00`). Until a decision is made the app assumes 4-zone (`Auto: ?`). The detection result is printed in the console.
+  * **2-Zone / 4-Zone** override auto-detection, for the rare case where it guesses wrong.
+* **`Connect CX` / `Disconnect`:** scans for and connects to the OBDLink CX, or disconnects.
 
 ### Row 1: Global Vehicle & Environmental Sensors
 
 | Tile Label | Example Display | Source Register (`ihka_g11.prg`) | Exact Formula | What It Means & Normal Values |
 |---|---|---|---|---|
 | **`12V Bus`** | `14.48V` | OBDLink CX `ATRV` (Pin 16 ADC) | Direct `0.01V` ADC | **Vehicle 12V electrical bus voltage.**<br>• Engine running: **14.2V – 14.8V** (may dip to ~12.8V during coasting/smart-alternator decoupling).<br>• Engine off (Diagnostic Mode): **12.2V – 12.7V**.<br>• *Diagnostic clue:* If voltage sags below ~12.0V while running, BMW Power Management (`IBS`) may load-shed electric heaters/blowers. |
-| **`Evap`** | `2.4°C` | `DID 0xD8D7` Byte `0` (`STAT_TEMP_VERDAMPFER_WERT`) | `raw / 5.0 - 10.0` (°C) | **A/C Evaporator Core fin temperature** (upstream of heater core).<br>• Normal with A/C ON: **+2.0°C to +4.5°C**.<br>• *Diagnostic clue:* If `Evap` drops below **+1.0°C / 0.0°C** (like the `-0.4°C` caught in your Oct 10 trace), IHKA triggers an emergency anti-icing compressor cut-out, causing sudden warm/humid air waves! |
+| **`Evap`** | `2.4°C` | `DID 0xD8D7` Byte `0` (`STAT_TEMP_VERDAMPFER_WERT`) | `raw / 5.0 - 10.0` (°C) | **A/C Evaporator Core fin temperature** (upstream of heater core).<br>• Normal with A/C ON: **+2.0°C to +4.5°C**.<br>• *Diagnostic clue:* If `Evap` drops below **+1.0°C / 0.0°C** (readings as low as `-0.4°C` have been logged), IHKA triggers an emergency anti-icing compressor cut-out, causing sudden warm/humid air waves! |
 | **`Cabin`** | `21°C` | `DID 0xD8D7` Byte `10` (`STAT_TEMP_INNENRAUM_UNGEDAEMPFT_WERT`) | `int8` (°C) | **Undamped interior cabin thermistor** behind the tiny intake grille on the front climate faceplate.<br>• Should track actual cockpit temperature within 1–2°C.<br>• *Diagnostic clue:* If `Cabin` stays frozen at a low value (e.g., `17°C`) or lags far behind true cabin warmth due to dust/aspirator fan stall, IHKA will continuously roast all 4 footwells! |
 | **`Glass/RH`** | `11°/64%` | `DID 0xD8D9` Bytes `3` & `2` (`STAT_BUS_IN_RLBS_TEMP_FRONTSCHEIBE_WERT` & `LUFTFEUCHTIGKEIT`) | Glass: `raw / 2.0 - 40.0` (°C)<br>RH: `raw / 2.0` (%) | **Inner windshield glass temperature (°C) and local relative humidity (%)** measured by the mirror-base condensation sensor (`RLBS`).<br>• *Diagnostic clue:* When glass temp drops within ~1–2°C of the local dew point (high RH% in 0°C weather), IHKA silently overrides `AUTO` mode and blasts 30°C air up the windshield defrost duct (*Beschlagschutz*). |
-| **`Coolant`** | `88°C` | `DID 0xD8D9` Bytes `8..9` (`STAT_BUS_IN_KUEHLMITTEL_MOTOR_TEMP_WERT`) | `int16_be` (°C) | **B58 engine coolant temperature** received by IHKA over the CAN bus.<br>• Warmed-up B58: **85°C – 108°C**.<br>• Below 30°C on cold start, `AUTO` suppresses main blower speed to avoid cold drafts. |
+| **`Coolant`** | `88°C` | `DID 0xD8D9` Bytes `8..9` (`STAT_BUS_IN_KUEHLMITTEL_MOTOR_TEMP_WERT`) | `int16_be` (°C) | **Engine coolant temperature** received by IHKA over the CAN bus (logged as `b58_coolant_c`, but valid for any engine).<br>• Warmed-up B58: **85°C – 108°C**.<br>• Below 30°C on cold start, `AUTO` suppresses main blower speed to avoid cold drafts. |
 
 ---
 
-### Row 2: 4-Zone Outlet Duct Temperatures (`DID 0xD8D7`)
+### Row 2: Outlet Duct Temperatures (`DID 0xD8D7`)
 
-All 8 outlet duct thermistors are read in a single multi-frame burst from `DID 0xD8D7` (`RES_0xD8D7_D`) as signed 1°C integers (`int8`):
+All outlet duct thermistors (8 on a 4-zone car, 4 on a 2-zone car) are read in a single multi-frame burst from `DID 0xD8D7` (`RES_0xD8D7_D`) as signed 1°C integers (`int8`, so sub-zero readings are preserved). On **2-zone** cars the two **`Rr`** tiles are hidden and the front tiles take the full row. A rear byte of `0x80` means "no sensor / invalid" and is shown as `--`.
 
 | Tile Label | Example Display | Source Bytes (`0xD8D7`) | What It Means & Expected Behavior in `AUTO` (~21°C Target) |
 |---|---|---|---|
 | **`Fr Vent L/R`** | `20/20°C` | Byte `1` (Left) / Byte `2` (Right) (`STAT_TEMP_BELUEFTUNG_LINKS/RECHTS_WERT`) | **Front dashboard face-level outlet temperatures (Driver / Passenger).**<br>• In steady-state `AUTO`, BMW's *"warm feet, cool head"* curve keeps face vents crisp around **19°C – 22°C**. |
 | **`Fr Foot L/R`** | `32/32°C` | Byte `3` (Left) / Byte `4` (Right) (`STAT_TEMP_FUSSRAUM_LINKS/RECHTS_WERT`) | **Front driver and passenger footwell duct temperatures.**<br>• During cold warm-up surge: **38°C – 45°C**.<br>• During steady cruise: **28°C – 34°C**.<br>• *Diagnostic clue:* Sustained **45°C – 50°C+** after the cabin is already warm indicates either an under-reading `Cabin` sensor or an aggressive cold face-stratification offset. |
 | **`Rr Vent L/R`** | `21/21°C` | Byte `6` (Rear Left) / Byte `7` (Rear Right) (`STAT_TEMP_BELUEFTUNG_HINTEN_LINKS/RECHTS_WERT`) | **Rear center-console face-level outlet temperatures (4-Zone).**<br>• Should hover near **20°C – 23°C** when rear stratification is neutral. |
-| **`Rr Foot L/R`** | `33/33°C` | Byte `8` (Rear Left) / Byte `9` (Rear Right) (`STAT_TEMP_FUSSRAUM_HINTEN_LINKS/RECHTS_WERT`) | **Rear under-seat footwell duct temperatures (4-Zone).**<br>• *Diagnostic clue:* In your Oct 10 trace, these climbed to **56°C / 54°C**, directly matching rear passenger complaints of overheated feet. |
+| **`Rr Foot L/R`** | `33/33°C` | Byte `8` (Rear Left) / Byte `9` (Rear Right) (`STAT_TEMP_FUSSRAUM_HINTEN_LINKS/RECHTS_WERT`) | **Rear under-seat footwell duct temperatures (4-Zone).**<br>• *Diagnostic clue:* Sustained readings above **~50°C** (e.g. **56°C / 54°C** in one logged drive) match rear passenger complaints of overheated feet. |
 
 ---
 
@@ -75,11 +95,14 @@ All 8 outlet duct thermistors are read in a single multi-frame burst from `DID 0
 
 ### Action Buttons Explained
 
-* **`START 1Hz LOG` / `STOP LOG`:** Starts/stops writing all **57 telemetry columns** at 1 sample per second to `/Android/data/com.g31.ihkalogger/files/g31_ihka_4zone_YYYYMMDD_HHMMSS.csv`.
+* **`START 1Hz LOG` / `STOP LOG`:** Starts/stops writing all **57 telemetry columns** at 1 sample per second to `/Android/data/si.kalin.ihkalogger/files/ihka_log_YYYYMMDD_HHMMSS.csv` (logs from older app versions are named `g31_ihka_4zone_YYYYMMDD_HHMMSS.csv`; both appear in the share list). Unavailable values — e.g. the rear duct columns on a 2-zone car, or routines the module did not answer — are written as **empty cells**.
 * **`CALIB FLAPS` (`UDS 31 01 A1 24`):**
-  * **Why it is here:** Earlier in our troubleshooting, you asked how to run BMW's **"Flap Motor End-Stop Calibration"** (`KLAPPENMOTOR_KALIBRIERLAUF`) without paying $99 for ProTool or installing a 150 GB ISTA+ setup. This button executes that exact factory service routine (`31 01 A1 24` followed by `31 03 A1 24` status polling) for free!
-  * **When to use it:** Only if you ever replace a stepper motor, unplug the climate housing, or suspect a flap has lost its 0%/100% mechanical end-stops. *(Run with ignition in **Diagnostic Mode, engine OFF**; disabled automatically while logging).*
-* **`SHARE CSV`:** Opens the Android system share sheet for the most recently recorded `.csv` log file.
+  * **What it does:** Runs BMW's factory **"Flap Motor End-Stop Calibration"** (`KLAPPENMOTOR_KALIBRIERLAUF`) without ProTool or ISTA+: `31 01 A1 24` followed by `31 03 A1 24` status polling, sweeping all LIN stepper motors between 0% and 100%.
+  * **When to use it:** Only if you ever replace a stepper motor, unplug the climate housing, or suspect a flap has lost its 0%/100% mechanical end-stops. A confirmation dialog appears before the routine starts. *(Run with ignition in **Diagnostic Mode, engine OFF**; disabled while logging.)*
+* **`SHARE CSV`:** Opens a checklist of all recorded logs, newest first, labelled by date and time (`YYYY-MM-DD  HH:MM:SS`) with file size.
+  * Logs **not yet shared** are shown in **bold** and pre-checked; logs already shared are shown in normal font, unchecked, and tagged `sent`.
+  * **`Share (n)`** opens the Android share sheet with all checked files and marks them as sent. (The app cannot tell whether the target app actually delivered them — a log counts as sent once you tap Share.)
+* **`MARK HOT BLAST` / `MARK COLD BLAST`:** Visible only while logging; see the Quick-Start Guide.
 
 ---
 
@@ -87,10 +110,45 @@ All 8 outlet duct thermistors are read in a single multi-frame burst from `DID 0
 
 Install dependencies once on your PC:
 ```bash
-pip install numpy matplotlib
+pip install -r python_tools/requirements.txt
 ```
 
 Run the 5-panel diagnostic plotter on any exported CSV log:
 ```bash
-python python_tools/plot_ihka_log.py --csv g31_ihka_4zone_YYYYMMDD_HHMMSS.csv --save g31_analysis.png
+python python_tools/plot_ihka_log.py --csv ihka_log_YYYYMMDD_HHMMSS.csv --save ihka_analysis.png
 ```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--csv PATH` | *(required)* | CSV log exported from the app. |
+| `--save PATH` | — | Also save the figure as PNG/PDF. |
+| `--spike-rate R` | `2.5` | Evaporator dT/dt threshold (°C/s) for marking sensor glitches. |
+
+The plotter detects 2-zone vs 4-zone from the data: logs from 2-zone cars have empty rear-duct columns, which are simply not plotted, and the titles show the detected zone count.
+
+---
+
+## 4. Building & Releasing
+
+**Local build** (JDK 17+, Android SDK 35):
+```bash
+./gradlew assembleDebug      # debug APK
+./gradlew assembleRelease    # release APK, unsigned unless keystore.properties exists
+```
+To sign local release builds, create an untracked `keystore.properties` in the repository root with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`.
+
+**Publishing a release** is automated by `.github/workflows/release.yml`. Pushing a tag such as `v1.2.0` builds a signed APK and publishes it as a GitHub Release named `G30-G31-IHKA-Logger-1.2.0.apk`, with release notes generated from the commits:
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+`versionName` is taken from the tag and `versionCode` from the workflow run number. The workflow needs these repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | The release keystore (`.jks`), base64-encoded |
+| `ANDROID_KEYSTORE_PASSWORD` | Keystore password |
+| `ANDROID_KEY_ALIAS` | Key alias |
+| `ANDROID_KEY_PASSWORD` | Key password |
+
+Keep the keystore backed up: every update must be signed with the same key, or Android will refuse to install it over the previous version.

@@ -1,4 +1,4 @@
-package com.g31.ihkalogger
+package si.kalin.ihkalogger
 
 import android.annotation.SuppressLint
 import android.bluetooth.*
