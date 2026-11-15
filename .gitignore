@@ -1,10 +1,19 @@
 *.iml
 .gradle
+.kotlin/
 /local.properties
 /.idea
 .DS_Store
-/build
+build/
 /captures
 .externalNativeBuild
 .cxx
 local.properties
+
+# Editor backups
+*~
+*.un~
+*.swp
+
+# Deep OBD dump (proprietary BMW ECU data + vehicle-specific config)
+/Deep_OBD_Dump/
