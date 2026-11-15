@@ -128,27 +128,6 @@ The plotter detects 2-zone vs 4-zone from the data: logs from 2-zone cars have e
 
 ---
 
-## 4. Building & Releasing
+## License
 
-**Local build** (JDK 17+, Android SDK 35):
-```bash
-./gradlew assembleDebug      # debug APK
-./gradlew assembleRelease    # release APK, unsigned unless keystore.properties exists
-```
-To sign local release builds, create an untracked `keystore.properties` in the repository root with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`.
-
-**Publishing a release** is automated by `.github/workflows/release.yml`. Pushing a tag such as `v1.2.0` builds a signed APK and publishes it as a GitHub Release named `G30-G31-IHKA-Logger-1.2.0.apk`, with release notes generated from the commits:
-```bash
-git tag v1.2.0
-git push origin v1.2.0
-```
-`versionName` is taken from the tag and `versionCode` from the workflow run number. The workflow needs these repository secrets (Settings → Secrets and variables → Actions):
-
-| Secret | Value |
-|---|---|
-| `ANDROID_KEYSTORE_BASE64` | The release keystore (`.jks`), base64-encoded |
-| `ANDROID_KEYSTORE_PASSWORD` | Keystore password |
-| `ANDROID_KEY_ALIAS` | Key alias |
-| `ANDROID_KEY_PASSWORD` | Key password |
-
-Keep the keystore backed up: every update must be signed with the same key, or Android will refuse to install it over the previous version.
+Free for any use, including internal company use. Selling the software or including it in paid products or services is not allowed without permission. See [LICENSE](LICENSE) for the full terms.
