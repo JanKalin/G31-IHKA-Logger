@@ -45,13 +45,13 @@ The Android dashboard is organized into a header, **4 rows of live metric tiles*
 
 ### Row 1: Global Vehicle & Environmental Sensors
 
-| Tile Label | Example Display | Exact Formula | What It Means & Normal Values | Diagnostic Clue |
-|---|---|---|---|---|
-| **`12V Bus`** | `14.48V` | Direct `0.01V` ADC | **Vehicle 12V electrical bus voltage.**<br>• Engine running: **14.2V – 14.8V** (may dip to ~12.8V during coasting/smart-alternator decoupling).<br>• Engine off (Diagnostic Mode): **12.2V – 12.7V**. | If voltage sags below ~12.0V while running, BMW Power Management (`IBS`) may load-shed electric heaters/blowers. |
-| **`Evap`** | `2.4°C` | `raw / 5.0 - 10.0` (°C) | **A/C Evaporator Core fin temperature** (upstream of heater core).<br>• Normal with A/C ON: **+2.0°C to +4.5°C**. | If `Evap` drops below **+1.0°C / 0.0°C** (readings as low as `-0.4°C` have been logged), IHKA triggers an emergency anti-icing compressor cut-out, causing sudden warm/humid air waves! |
-| **`Cabin`** | `21°C` | `int8` (°C) | **Undamped interior cabin thermistor** behind the tiny intake grille on the front climate faceplate.<br>• Should track actual cockpit temperature within 1–2°C. | If `Cabin` stays frozen at a low value (e.g., `17°C`) or lags far behind true cabin warmth due to dust/aspirator fan stall, IHKA will continuously roast all 4 footwells! |
-| **`Glass/RH`** | `11°/64%` | Glass: `raw / 2.0 - 40.0` (°C)<br>RH: `raw / 2.0` (%) | **Inner windshield glass temperature (°C) and local relative humidity (%)** measured by the mirror-base condensation sensor (`RLBS`). | When glass temp drops within ~1–2°C of the local dew point (high RH% in 0°C weather), IHKA silently overrides `AUTO` mode and blasts 30°C air up the windshield defrost duct (*Beschlagschutz*). |
-| **`Coolant`** | `88°C` | `int16_be` (°C) | **Engine coolant temperature** received by IHKA over the CAN bus (logged as `b58_coolant_c`, but valid for any engine).<br>• Warmed-up B58: **85°C – 108°C**.<br>• Below 30°C on cold start, `AUTO` suppresses main blower speed to avoid cold drafts. | — |
+| Tile Label | Example Display | What It Means & Normal Values | Diagnostic Clue |
+|---|---|---|---|
+| **`12V Bus`** | `14.48V` | **Vehicle 12V electrical bus voltage.**<br>• Engine running: **14.2V – 14.8V** (may dip to ~12.8V during coasting/smart-alternator decoupling).<br>• Engine off (Diagnostic Mode): **12.2V – 12.7V**. | If voltage sags below ~12.0V while running, BMW Power Management (`IBS`) may load-shed electric heaters/blowers. |
+| **`Evap`** | `2.4°C` | **A/C Evaporator Core fin temperature** (upstream of heater core).<br>• Normal with A/C ON: **+2.0°C to +4.5°C**. | If `Evap` drops below **+1.0°C / 0.0°C** (readings as low as `-0.4°C` have been logged), IHKA triggers an emergency anti-icing compressor cut-out, causing sudden warm/humid air waves! |
+| **`Cabin`** | `21°C` | **Undamped interior cabin thermistor** behind the tiny intake grille on the front climate faceplate.<br>• Should track actual cockpit temperature within 1–2°C. | If `Cabin` stays frozen at a low value (e.g., `17°C`) or lags far behind true cabin warmth due to dust/aspirator fan stall, IHKA will continuously roast all 4 footwells! |
+| **`Glass/RH`** | `11°/64%` | **Inner windshield glass temperature (°C) and local relative humidity (%)** measured by the mirror-base condensation sensor (`RLBS`). | When glass temp drops within ~1–2°C of the local dew point (high RH% in 0°C weather), IHKA silently overrides `AUTO` mode and blasts 30°C air up the windshield defrost duct (*Beschlagschutz*). |
+| **`Coolant`** | `88°C` | **Engine coolant temperature** received by IHKA over the CAN bus (logged as `b58_coolant_c`, but valid for any engine).<br>• Warmed-up B58: **85°C – 108°C**.<br>• Below 30°C on cold start, `AUTO` suppresses main blower speed to avoid cold drafts. | — |
 
 ---
 
