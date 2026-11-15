@@ -711,7 +711,7 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("IHKA ${state.zones}-zone Logger", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("G30/G31 IHKA ${state.zones}-zone Logger", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Text("${state.connStatus} · Rows: ${state.sampleCount}", fontSize = 12.5.sp, color = Color(0xFF64B5F6))
             }
             ZoneModeSelector(state, onSelect = vm::setZoneMode)

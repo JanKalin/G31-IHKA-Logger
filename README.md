@@ -36,7 +36,7 @@ The Android dashboard is organized into a header, **4 rows of live metric tiles*
 
 ### Header & Zone Selector
 
-* **Title — `IHKA 2-zone Logger` / `4-zone Logger`:** the zone count currently in effect.
+* **Title — `G30/G31 IHKA 2-zone Logger` / `4-zone Logger`:** the zone count currently in effect.
 * **Status line:** Bluetooth connection state and the number of CSV rows recorded in the current log.
 * **Zone button (`Auto: 4Z`, `Auto: 2Z`, `Auto: ?`, `2Z`, `4Z`):** opens a menu with **Auto-detect**, **2-Zone** and **4-Zone**. The selection is saved and survives app restarts.
   * **Auto-detect** uses the rear duct sensor bytes `6..9` of `DID 0xD8D7`. The `ihka_g11.prg` variant is shared by 2-zone and 4-zone modules and always returns the full array, but on a 2-zone car those unpopulated channels read `0x80` or `0x00`. Any valid rear reading locks in **4-zone** for the session; **2-zone** is chosen only after 3 consecutive samples with all four rear bytes unpopulated (a real 4-zone duct at exactly 0°C also reads `0x00`). Until a decision is made the app assumes 4-zone (`Auto: ?`). The detection result is printed in the console.
