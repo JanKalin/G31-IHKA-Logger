@@ -26,8 +26,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -726,7 +731,7 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
         }
 
         // Row 1: Primary Global Sensors (12V Battery, Evaporator, Cabin, Windshield RLBS, Coolant)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        TileRow {
             MetricTile("12V Bus", if (s.batteryV.isNaN()) "--" else "${"%.2f".format(Locale.US, s.batteryV)}V", Color(0xFF66BB6A), Modifier.weight(0.95f))
             MetricTile("Evap", if (s.evapC.isNaN()) "--" else "${"%.1f".format(Locale.US, s.evapC)}°C", Color(0xFF29B6F6), Modifier.weight(0.95f))
             MetricTile("Cabin", "${s.cabinC}°C", Color(0xFFFFCA28), Modifier.weight(0.85f))
@@ -736,7 +741,7 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
 
         // Row 2: Duct Temperatures (Front Vents + Footwells; Rear only on 4-zone cars)
         fun duct(l: Int, r: Int) = "${if (l == -999) "--" else l}/${if (r == -999) "--" else r}°C"
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        TileRow {
             MetricTile("Fr Vent L/R", duct(s.ventFrontL, s.ventFrontR), Color(0xFF4DD0E1), Modifier.weight(1f))
             MetricTile("Fr Foot L/R", duct(s.footFrontL, s.footFrontR), Color(0xFFFF8A65), Modifier.weight(1f))
             if (state.zones == 4) {
@@ -755,7 +760,7 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
         } else "--"
         val stratStr = if (s.stratL >= 0) "${s.stratL}/${s.stratR}%" else "--"
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        TileRow {
             MetricTile("Set F/R ($syncTag)", "$setFr·$setRr", Color(0xFFFFEE58), Modifier.weight(1.25f))
             MetricTile("Vent/AC Mode", s.ventStateSummary(), Color(0xFF26A69A), Modifier.weight(1.15f))
             MetricTile("Fan Stp (%)", blwStr, Color(0xFF42A5F5), Modifier.weight(1.05f))
@@ -768,7 +773,7 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             "${"%.0f".format(Locale.US, s.ptcDutyPct)}%$tPart"
         } else "--"
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        TileRow {
             MetricTile("Def / Foot L·R", if (s.flapDefrost >= 0) "${s.flapDefrost}·${s.flapFootL}/${s.flapFootR}%" else "--", Color(0xFF90CAF9), Modifier.weight(1.15f))
             MetricTile("Mix Fr L/R", if (s.flapMixL >= 0) "${s.flapMixL}/${s.flapMixR}%" else "--", Color(0xFFFFCC80), Modifier.weight(1.0f))
             MetricTile("Mix Rr L/R", if (s.flapRearMixL >= 0) "${s.flapRearMixL}/${s.flapRearMixR}%" else "--", Color(0xFFA5D6A7), Modifier.weight(1.0f))
@@ -937,11 +942,90 @@ fun shareCsvFiles(context: Context, files: List<File>) {
     context.startActivity(Intent.createChooser(share, title))
 }
 
+/**
+ * Shared auto-sizing for the tiles of one row: every tile reports the largest font (in px) at which
+ * its label and its value still fit on one line; all labels in the row use the smallest label fit and
+ * all values the smallest value fit. Sizes only shrink, so they don't jump as values change length;
+ * they reset when a tile's width changes (rotation, rear tiles shown/hidden).
+ */
+@Stable
+class TileTextSizes {
+    private val widthsPx = mutableMapOf<Any, Int>()
+    private val labelFitsPx = mutableMapOf<Any, Float>()
+    private val valueFitsPx = mutableMapOf<Any, Float>()
+    private var labelPx by mutableStateOf<Float?>(null)
+    private var valuePx by mutableStateOf<Float?>(null)
+
+    fun labelPx(minPx: Float, maxPx: Float, defaultPx: Float): Float = (labelPx ?: defaultPx).coerceIn(minPx, maxPx)
+    fun valuePx(minPx: Float, maxPx: Float, defaultPx: Float): Float = (valuePx ?: defaultPx).coerceIn(minPx, maxPx)
+
+    fun report(id: Any, widthPx: Int, labelFit: Float, valueFit: Float) {
+        val oldWidth = widthsPx.put(id, widthPx)
+        labelFitsPx[id] = labelFit
+        valueFitsPx[id] = valueFit
+        val minLabel = labelFitsPx.values.min()
+        val minValue = valueFitsPx.values.min()
+        if (oldWidth != null && oldWidth != widthPx) {
+            // Layout changed: start over from what fits now.
+            labelPx = minLabel
+            valuePx = minValue
+        } else {
+            // Shrink only (state is written only when it actually gets smaller).
+            if (minLabel < (labelPx ?: Float.MAX_VALUE)) labelPx = minLabel
+            if (minValue < (valuePx ?: Float.MAX_VALUE)) valuePx = minValue
+        }
+    }
+
+    fun remove(id: Any) {
+        widthsPx.remove(id)
+        labelFitsPx.remove(id)
+        valueFitsPx.remove(id)
+    }
+}
+
+val LocalTileTextSizes = staticCompositionLocalOf { TileTextSizes() }
+
+/** A row of [MetricTile]s sharing one label size and one value size. */
+@Composable
+fun TileRow(content: @Composable RowScope.() -> Unit) {
+    val sizes = remember { TileTextSizes() }
+    CompositionLocalProvider(LocalTileTextSizes provides sizes) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), content = content)
+    }
+}
+
+/** Largest font size in px at which [text] fits in [maxWidthPx] on one line. Width scales linearly with px size. */
+private fun fitFontPx(measurer: TextMeasurer, text: String, weight: FontWeight, maxWidthPx: Int, density: Density): Float {
+    if (text.isEmpty() || maxWidthPx <= 0) return Float.MAX_VALUE
+    val refPx = 100f
+    val refSp = with(density) { refPx.toSp() }
+    val width = measurer.measure(
+        text, TextStyle(fontSize = refSp, fontWeight = weight), maxLines = 1, softWrap = false
+    ).size.width
+    return if (width <= 0) Float.MAX_VALUE else refPx * maxWidthPx / width * 0.97f
+}
+
 @Composable
 fun MetricTile(label: String, value: String, accent: Color, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.background(Color(0xFF1A2027), RoundedCornerShape(8.dp)).padding(vertical = 6.dp, horizontal = 6.dp)) {
-        Text(label, fontSize = 10.5.sp, color = Color(0xFF90A4AE), maxLines = 1)
-        Text(value, fontSize = 14.5.sp, fontWeight = FontWeight.Bold, color = accent, maxLines = 1)
+    val sizes = LocalTileTextSizes.current
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    // Stable identity for this tile, independent of its (possibly changing) label text.
+    val id = remember { Any() }
+    DisposableEffect(id) { onDispose { sizes.remove(id) } }
+
+    BoxWithConstraints(modifier = modifier.background(Color(0xFF1A2027), RoundedCornerShape(8.dp)).padding(vertical = 6.dp, horizontal = 6.dp)) {
+        val widthPx = constraints.maxWidth
+        val labelFit = remember(label, widthPx, density) { fitFontPx(measurer, label, FontWeight.Normal, widthPx, density) }
+        val valueFit = remember(value, widthPx, density) { fitFontPx(measurer, value, FontWeight.Bold, widthPx, density) }
+        SideEffect { sizes.report(id, widthPx, labelFit, valueFit) }
+
+        val labelSize = with(density) { sizes.labelPx(7.sp.toPx(), 18.sp.toPx(), 10.5.sp.toPx()).toSp() }
+        val valueSize = with(density) { sizes.valuePx(9.sp.toPx(), 34.sp.toPx(), 14.5.sp.toPx()).toSp() }
+        Column {
+            Text(label, fontSize = labelSize, color = Color(0xFF90A4AE), maxLines = 1, softWrap = false)
+            Text(value, fontSize = valueSize, fontWeight = FontWeight.Bold, color = accent, maxLines = 1, softWrap = false)
+        }
     }
 }
 
