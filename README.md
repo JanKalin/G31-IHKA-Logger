@@ -2,8 +2,6 @@
 
 Custom Android (Kotlin / Jetpack Compose) + Python diagnostic suite for **BMW G30 / G31 5 Series** cars with **2-Zone or 4-Zone Automatic Climate Control** (4-zone = option `S4NBA`) and an **OBDLink CX (Bluetooth LE / `STN2310`)** adapter. Developed and tested on a G31 540i Touring with 4-zone climate.
 
-All UDS Data Identifiers (`0x22`), Routine Control Identifiers (`0x31`), byte offsets, and scaling formulas in this project are extracted directly from BMW's factory **`ihka_g11.prg`** ECU description file (`ECU 0x78` on CAN ID `0x6F1` -> `0x678`).
-
 ---
 
 ## 0. Installation
