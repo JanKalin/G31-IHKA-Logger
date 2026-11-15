@@ -126,7 +126,12 @@ data class IhkaSnapshot(
     }
 }
 
+enum class ZoneMode(val label: String) { AUTO("Auto"), TWO_ZONE("2-Zone"), FOUR_ZONE("4-Zone") }
+
 data class UiState(
+    val zoneMode: ZoneMode = ZoneMode.AUTO,
+    /** Result of auto-detection from the rear duct bytes of 0xD8D7; null until decided. */
+    val detectedZones: Int? = null,
     val connStatus: String = "Disconnected",
     val isBusy: Boolean = false,
     val isLogging: Boolean = false,
@@ -136,7 +141,14 @@ data class UiState(
     val sparkFootL: List<Float> = emptyList(),
     val sparkWindshield: List<Float> = emptyList(),
     val consoleLines: List<String> = emptyList()
-)
+) {
+    /** Zone count actually in effect: manual override wins, else detection, else assume 4. */
+    val zones: Int get() = when (zoneMode) {
+        ZoneMode.TWO_ZONE -> 2
+        ZoneMode.FOUR_ZONE -> 4
+        ZoneMode.AUTO -> detectedZones ?: 4
+    }
+}
 
 class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
 
@@ -147,12 +159,49 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
     private var activeJob: Job? = null
     private val pendingMarker = AtomicReference("")
     private val sharePrefs = app.getSharedPreferences("csv_share", Context.MODE_PRIVATE)
+    private val settingsPrefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+    // Auto zone detection: one valid rear reading latches 4-zone for the session;
+    // 2-zone needs several consecutive all-unpopulated samples (a real 4-zone duct can read 0x00 = 0°C).
+    private var rearSeenValid = false
+    private var rearEmptyStreak = 0
 
     init {
+        val saved = settingsPrefs.getString(KEY_ZONE_MODE, null)
+        val mode = ZoneMode.entries.firstOrNull { it.name == saved } ?: ZoneMode.AUTO
+        _ui.update { it.copy(zoneMode = mode) }
+
         viewModelScope.launch {
             ble.connectionState.collect { st ->
                 _ui.update { it.copy(connStatus = st) }
             }
+        }
+    }
+
+    fun setZoneMode(mode: ZoneMode) {
+        settingsPrefs.edit().putString(KEY_ZONE_MODE, mode.name).apply()
+        _ui.update { it.copy(zoneMode = mode) }
+        val st = _ui.value
+        val detail = if (mode == ZoneMode.AUTO) " (detected: ${st.detectedZones?.let { "$it-zone" } ?: "pending"})" else ""
+        appendLog("[*] Zone mode set to ${mode.label}$detail")
+    }
+
+    private fun updateZoneDetection(rearRaw: List<Int>) {
+        val unpopulated = rearRaw.all { it == 0x80 || it == 0x00 }
+        if (!unpopulated) {
+            rearSeenValid = true
+            rearEmptyStreak = 0
+        } else if (!rearSeenValid) {
+            rearEmptyStreak++
+        }
+        val detected = when {
+            rearSeenValid -> 4
+            rearEmptyStreak >= 3 -> 2
+            else -> null
+        }
+        if (detected != null && detected != _ui.value.detectedZones) {
+            _ui.update { it.copy(detectedZones = detected) }
+            appendLog("[*] Auto-detected $detected-zone IHKA (rear duct bytes ${rearRaw.joinToString(" ") { "%02X".format(it) }})")
         }
     }
 
@@ -206,10 +255,13 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
         val ventFR = d7[2].toInt()
         val footFL = d7[3].toInt()
         val footFR = d7[4].toInt()
-        val ventRL = d7[6].toInt()
-        val ventRR = d7[7].toInt()
-        val footRL = d7[8].toInt()
-        val footRR = d7[9].toInt()
+        // Bytes 6..9 are the rear duct sensors; on a 2-zone car they read 0x80 or 0x00.
+        updateZoneDetection((6..9).map { d7[it].toInt() and 0xFF })
+        val hasRear = _ui.value.zones == 4
+        val ventRL = if (hasRear) parseSensorTemp(d7[6]) else -999
+        val ventRR = if (hasRear) parseSensorTemp(d7[7]) else -999
+        val footRL = if (hasRear) parseSensorTemp(d7[8]) else -999
+        val footRR = if (hasRear) parseSensorTemp(d7[9]) else -999
         val cabinC = d7[10].toInt()
 
         // 2. DID 0xD8D9: Outside Temp, Windshield RLBS Temp & RH, AC Pressure, Engine Coolant
@@ -386,6 +438,10 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /** Signed °C (so sub-zero readings survive); 0x80 is the "no sensor / invalid" marker. */
+    fun parseSensorTemp(rawByte: Byte): Int =
+        if ((rawByte.toInt() and 0xFF) == 0x80) -999 else rawByte.toInt()
+
     fun startLogging() {
         if (!ble.isConnected || _ui.value.isLogging) {
             appendLog("[!] Connect to OBDLink CX first.")
@@ -401,7 +457,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
                     sparkEvap = emptyList(), sparkFootL = emptyList(), sparkWindshield = emptyList()
                 )
             }
-            appendLog("[*] Logging 1 Hz G31 4-Zone telemetry + PTC + Flaps -> ${csvFile.name}")
+            appendLog("[*] Logging 1 Hz ${_ui.value.zones}-Zone telemetry + PTC + Flaps -> ${csvFile.name}")
 
             val headers = listOf(
                 "timestamp", "elapsed_s", "event_marker", "battery_v",
@@ -567,6 +623,7 @@ class IhkaViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val KEY_SENT = "sent_files"
+        const val KEY_ZONE_MODE = "zone_mode"
     }
 }
 
@@ -652,9 +709,11 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("G31 540i · IHKA_G11 4-Zone (v7)", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("G30/G31 IHKA ${state.zones}-zone Logger", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Text("${state.connStatus} · Rows: ${state.sampleCount}", fontSize = 12.5.sp, color = Color(0xFF64B5F6))
             }
+            ZoneModeSelector(state, onSelect = vm::setZoneMode)
+            Spacer(Modifier.width(6.dp))
             Button(
                 onClick = {
                     if (state.connStatus.startsWith("Connected")) vm.disconnectBle()
@@ -673,12 +732,15 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
             MetricTile("Coolant", s.coolantC?.let { "$it°C" } ?: "--", Color(0xFFEF5350), Modifier.weight(0.9f))
         }
 
-        // Row 2: 4-Zone Duct Temperatures (Front & Rear Vents + Footwells)
+        // Row 2: Duct Temperatures (Front Vents + Footwells; Rear only on 4-zone cars)
+        fun duct(l: Int, r: Int) = "${if (l == -999) "--" else l}/${if (r == -999) "--" else r}°C"
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            MetricTile("Fr Vent L/R", "${s.ventFrontL}/${s.ventFrontR}°C", Color(0xFF4DD0E1), Modifier.weight(1f))
-            MetricTile("Fr Foot L/R", "${s.footFrontL}/${s.footFrontR}°C", Color(0xFFFF8A65), Modifier.weight(1f))
-            MetricTile("Rr Vent L/R", "${s.ventRearL}/${s.ventRearR}°C", Color(0xFF81C784), Modifier.weight(1f))
-            MetricTile("Rr Foot L/R", "${s.footRearL}/${s.footRearR}°C", Color(0xFFFF7043), Modifier.weight(1f))
+            MetricTile("Fr Vent L/R", duct(s.ventFrontL, s.ventFrontR), Color(0xFF4DD0E1), Modifier.weight(1f))
+            MetricTile("Fr Foot L/R", duct(s.footFrontL, s.footFrontR), Color(0xFFFF8A65), Modifier.weight(1f))
+            if (state.zones == 4) {
+                MetricTile("Rr Vent L/R", duct(s.ventRearL, s.ventRearR), Color(0xFF81C784), Modifier.weight(1f))
+                MetricTile("Rr Foot L/R", duct(s.footRearL, s.footRearR), Color(0xFFFF7043), Modifier.weight(1f))
+            }
         }
 
         // Row 3: Aircon Panel Settings (Target Temps, SYNC, Vent State AUTO/MAN + AC, Blower Step & %, Stratification)
@@ -758,6 +820,33 @@ fun IhkaCockpitScreen(vm: IhkaViewModel = viewModel()) {
         ) {
             items(state.consoleLines) { ln ->
                 Text(ln, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFB0BEC5))
+            }
+        }
+    }
+}
+
+@Composable
+fun ZoneModeSelector(state: UiState, onSelect: (ZoneMode) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val label = when (state.zoneMode) {
+        ZoneMode.AUTO -> "Auto: " + (state.detectedZones?.let { "${it}Z" } ?: "?")
+        ZoneMode.TWO_ZONE -> "2Z"
+        ZoneMode.FOUR_ZONE -> "4Z"
+    }
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true },
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+        ) { Text(label, fontSize = 12.sp) }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            ZoneMode.entries.forEach { mode ->
+                val text = if (mode == ZoneMode.AUTO) {
+                    "Auto-detect" + (state.detectedZones?.let { " (found $it-zone)" } ?: "")
+                } else mode.label
+                DropdownMenuItem(
+                    text = { Text(text, fontWeight = if (mode == state.zoneMode) FontWeight.Bold else FontWeight.Normal) },
+                    onClick = { expanded = false; onSelect(mode) }
+                )
             }
         }
     }
